@@ -1,0 +1,47 @@
+{
+  "": {
+    "swift-dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/master.swiftdeps"
+  },
+  "/Users/alejandrocamus/Documents/dev/Pocket/Sources/Pocket/AppDelegate.swift": {
+    "dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/AppDelegate.d",
+    "object": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/AppDelegate.swift.o",
+    "swiftmodule": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/AppDelegate~partial.swiftmodule",
+    "swift-dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/AppDelegate.swiftdeps",
+    "diagnostics": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/AppDelegate.dia"
+  },
+  "/Users/alejandrocamus/Documents/dev/Pocket/Sources/Pocket/Models.swift": {
+    "dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Models.d",
+    "object": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Models.swift.o",
+    "swiftmodule": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Models~partial.swiftmodule",
+    "swift-dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Models.swiftdeps",
+    "diagnostics": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Models.dia"
+  },
+  "/Users/alejandrocamus/Documents/dev/Pocket/Sources/Pocket/PocketApp.swift": {
+    "dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/PocketApp.d",
+    "object": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/PocketApp.swift.o",
+    "swiftmodule": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/PocketApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/PocketApp.swiftdeps",
+    "diagnostics": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/PocketApp.dia"
+  },
+  "/Users/alejandrocamus/Documents/dev/Pocket/Sources/Pocket/Views.swift": {
+    "dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Views.d",
+    "object": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Views.swift.o",
+    "swiftmodule": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Views~partial.swiftmodule",
+    "swift-dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Views.swiftdeps",
+    "diagnostics": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/Views.dia"
+  },
+  "/Users/alejandrocamus/Documents/dev/Pocket/Sources/Pocket/WebViewController.swift": {
+    "dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WebViewController.d",
+    "object": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WebViewController.swift.o",
+    "swiftmodule": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WebViewController~partial.swiftmodule",
+    "swift-dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WebViewController.swiftdeps",
+    "diagnostics": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WebViewController.dia"
+  },
+  "/Users/alejandrocamus/Documents/dev/Pocket/Sources/Pocket/WindowManager.swift": {
+    "dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WindowManager.d",
+    "object": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WindowManager.swift.o",
+    "swiftmodule": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WindowManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WindowManager.swiftdeps",
+    "diagnostics": "/Users/alejandrocamus/Documents/dev/Pocket/.build/arm64-apple-macosx/debug/Pocket.build/WindowManager.dia"
+  }
+}
