@@ -148,7 +148,6 @@ private extension Color {
 enum PresentationMode: String, CaseIterable, Identifiable {
     case device
     case screen
-    case workspace
 
     var id: String { rawValue }
 
@@ -156,7 +155,6 @@ enum PresentationMode: String, CaseIterable, Identifiable {
         switch self {
         case .device: return "Device"
         case .screen: return "Screen"
-        case .workspace: return "Workspace"
         }
     }
 
@@ -164,7 +162,6 @@ enum PresentationMode: String, CaseIterable, Identifiable {
         switch self {
         case .device: return "iphone"
         case .screen: return "rectangle.inset.filled"
-        case .workspace: return "rectangle.split.3x1"
         }
     }
 }
@@ -209,8 +206,9 @@ enum DeviceOrientation: String, CaseIterable, Identifiable {
 }
 
 enum CompactLayout {
-    static let controlsIdealWidth: CGFloat = 252
+    static let controlsIdealWidth: CGFloat = 310
     static let controlsBaseHeight: CGFloat = 40
+    static let windowControlsBayHeight: CGFloat = 40
     static let controlsHorizontalInset: CGFloat = 8
     static let controlsBaySpacing: CGFloat = 8
 
@@ -235,7 +233,6 @@ extension PresentationMode {
         switch self {
         case .device: return 0.62
         case .screen: return 0.52
-        case .workspace: return 1.0
         }
     }
 
@@ -248,6 +245,7 @@ extension PresentationMode {
             return CGSize(
                 width: deviceSize.width * scale,
                 height: deviceSize.height * scale
+                    + CompactLayout.windowControlsBayHeight
                     + CompactLayout.controlsBayHeight(for: deviceSize.width * scale)
             )
         case .screen:
@@ -256,15 +254,16 @@ extension PresentationMode {
             return CGSize(
                 width: viewingWidth,
                 height: (screenSize.height + screenDragBarHeight) * scale
+                    + CompactLayout.windowControlsBayHeight
                     + CompactLayout.controlsBayHeight(for: viewingWidth)
             )
-        case .workspace:
-            return CGSize(width: 1240, height: 820)
         }
     }
 }
 
-final class WorkspaceModel: ObservableObject {
+final class PocketModel: ObservableObject {
+    static let shared = PocketModel()
+
     @Published var selectedApp: SimulatedApp {
         didSet {
             UserDefaults.standard.set(selectedApp.id, forKey: Self.selectedAppKey)
@@ -283,7 +282,7 @@ final class WorkspaceModel: ObservableObject {
         }
     }
 
-    @Published var sidebarVisible = true
+    @Published var isWebsiteManagerPresented = false
     @Published var alwaysOnTop: Bool {
         didSet {
             UserDefaults.standard.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)
@@ -322,17 +321,17 @@ final class WorkspaceModel: ObservableObject {
            let storedMode = PresentationMode(rawValue: rawValue) {
             presentationMode = storedMode
         } else {
-            presentationMode = .device
+            presentationMode = .screen
         }
 
         if let rawValue = defaults.string(forKey: Self.orientationKey),
            let storedOrientation = DeviceOrientation(rawValue: rawValue) {
             orientation = storedOrientation
         } else {
-            orientation = .portrait
+            orientation = .landscape
         }
 
-        alwaysOnTop = defaults.bool(forKey: Self.alwaysOnTopKey)
+        alwaysOnTop = defaults.object(forKey: Self.alwaysOnTopKey) as? Bool ?? true
         _ = controller(for: selectedApp)
     }
 

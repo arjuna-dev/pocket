@@ -5,24 +5,23 @@ final class WindowManager {
     static let shared = WindowManager()
 
     private weak var window: NSWindow?
+    private var alwaysOnTop = false
     private var lastContentSize: CGSize?
     private var currentMode: PresentationMode?
     private var currentOrientation: DeviceOrientation?
     private var resizeObserver: NSObjectProtocol?
     private var closeObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
-    private var dragEventMonitor: Any?
-    private var manualDragStartLocation: NSPoint?
-    private var manualDragWindowOrigin: NSPoint?
 
     private init() {}
 
     func attach(window: NSWindow) {
-        if self.window?.windowNumber != window.windowNumber {
-            removeObservers()
-            installObservers(for: window)
-            lastContentSize = nil
-        }
+        // SwiftUI resolves the bridge again for hover and other view updates.
+        // Configure each window once so those updates cannot disrupt a drag.
+        guard self.window !== window else { return }
+        removeObservers()
+        installObservers(for: window)
+        lastContentSize = nil
 
         self.window = window
         window.title = "Pocket"
@@ -32,6 +31,7 @@ final class WindowManager {
         window.acceptsMouseMovedEvents = true
         window.backgroundColor = .clear
         window.isOpaque = false
+
     }
 
     func resize(
@@ -89,79 +89,58 @@ final class WindowManager {
     }
 
     func setAlwaysOnTop(_ enabled: Bool) {
-        window?.level = enabled ? .floating : .normal
-    }
+        alwaysOnTop = enabled
+        guard let window else { return }
 
-    private func installDragEventMonitor() {
-        dragEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
-        ) { [weak self] event in
-            guard let self else { return event }
-            return self.handleDragEvent(event) ? nil : event
+        // Pinned panels must accept interaction in other apps' full-screen
+        // Spaces without activating Pocket. Unpinned panels should behave like
+        // ordinary app windows and come forward when Pocket is selected.
+        if enabled {
+            window.styleMask.insert(.nonactivatingPanel)
+        } else {
+            window.styleMask.remove(.nonactivatingPanel)
+        }
+
+        // Set an explicit policy for both states so unpinning also removes
+        // the full-screen and all-desktop behavior, including after relaunch.
+        var behavior = window.collectionBehavior
+        behavior.subtract([
+            .canJoinAllSpaces, .moveToActiveSpace,
+            .fullScreenPrimary, .fullScreenAuxiliary, .fullScreenNone,
+            .primary, .auxiliary, .canJoinAllApplications,
+            .managed, .transient, .stationary
+        ])
+        if enabled {
+            behavior.formUnion([
+                .canJoinAllSpaces, .fullScreenAuxiliary,
+                .canJoinAllApplications, .stationary
+            ])
+        } else {
+            behavior.formUnion([.managed, .fullScreenNone])
+        }
+        if window.collectionBehavior != behavior {
+            window.collectionBehavior = behavior
+        }
+
+        let level: NSWindow.Level = enabled ? .floating : .normal
+        if window.level != level {
+            window.level = level
         }
     }
 
-    private func handleDragEvent(_ event: NSEvent) -> Bool {
-        guard let window,
-              currentMode == .screen,
-              window.styleMask.contains(.borderless)
-        else {
-            return false
-        }
-
-        switch event.type {
-        case .leftMouseDown:
-            guard isInScreenDragBand(event, window: window) else { return false }
-
-            manualDragStartLocation = window.convertPoint(toScreen: event.locationInWindow)
-            manualDragWindowOrigin = window.frame.origin
-            NSCursor.closedHand.push()
-            return true
-
-        case .leftMouseDragged:
-            guard let manualDragStartLocation,
-                  let manualDragWindowOrigin
-            else {
-                return false
-            }
-
-            let currentLocation = window.convertPoint(toScreen: event.locationInWindow)
-            window.setFrameOrigin(
-                NSPoint(
-                    x: manualDragWindowOrigin.x + currentLocation.x - manualDragStartLocation.x,
-                    y: manualDragWindowOrigin.y + currentLocation.y - manualDragStartLocation.y
-                )
-            )
-            return true
-
-        case .leftMouseUp:
-            guard manualDragStartLocation != nil else { return false }
-
-            manualDragStartLocation = nil
-            manualDragWindowOrigin = nil
-            NSCursor.pop()
-            return true
-
-        default:
-            return false
-        }
+    func closeWindow() {
+        window?.performClose(nil)
     }
 
-    private func isInScreenDragBand(_ event: NSEvent, window: NSWindow) -> Bool {
-        guard let orientation = currentOrientation else { return false }
+    func minimizeWindow() {
+        window?.miniaturize(nil)
+    }
 
-        let contentWidth = max(window.contentView?.bounds.width ?? window.frame.width, 1)
-        let scale = max(contentWidth / orientation.screenSize.width, 0.1)
-        let visibleBarHeight = PresentationMode.screen.screenDragBarHeight * scale
-        let hitHeight = max(visibleBarHeight, 12)
-        let contentHeight = window.contentView?.bounds.height ?? window.frame.height
-
-        return event.locationInWindow.y >= contentHeight - hitHeight
+    func zoomWindow() {
+        window?.performZoom(nil)
     }
 
     private func installObservers(for window: NSWindow) {
-        installDragEventMonitor()
-
         resizeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didEndLiveResizeNotification,
             object: window,
@@ -198,12 +177,6 @@ final class WindowManager {
         closeObserver = nil
         terminationObserver = nil
 
-        if let dragEventMonitor {
-            NSEvent.removeMonitor(dragEventMonitor)
-        }
-        dragEventMonitor = nil
-        manualDragStartLocation = nil
-        manualDragWindowOrigin = nil
     }
 
     private func rememberCurrentWindowSize() {
@@ -212,31 +185,19 @@ final class WindowManager {
         let contentSize = window.contentRect(forFrameRect: window.frame).size
         guard contentSize.width > 0, contentSize.height > 0 else { return }
 
-        let defaults = UserDefaults.standard
-        if currentMode == .workspace {
-            defaults.set(contentSize.width, forKey: workspaceWidthKey)
-            defaults.set(contentSize.height, forKey: workspaceHeightKey)
-        } else {
-            let baseSize = currentMode.contentSize(for: currentOrientation)
-            guard baseSize.width > 0 else { return }
-            defaults.set(contentSize.width / baseSize.width, forKey: scaleKey(for: currentMode))
-        }
+        let baseSize = currentMode.contentSize(for: currentOrientation)
+        guard baseSize.width > 0 else { return }
+        UserDefaults.standard.set(
+            contentSize.width / baseSize.width,
+            forKey: scaleKey(for: currentMode)
+        )
     }
 
     private func savedContentSize(
         for mode: PresentationMode,
         orientation: DeviceOrientation
     ) -> CGSize? {
-        let defaults = UserDefaults.standard
-
-        if mode == .workspace {
-            let width = defaults.double(forKey: workspaceWidthKey)
-            let height = defaults.double(forKey: workspaceHeightKey)
-            guard width > 0, height > 0 else { return nil }
-            return CGSize(width: width, height: height)
-        }
-
-        let scale = defaults.double(forKey: scaleKey(for: mode))
+        let scale = UserDefaults.standard.double(forKey: scaleKey(for: mode))
         guard scale > 0 else { return nil }
         return mode.contentSize(for: orientation, scale: scale)
     }
@@ -245,65 +206,27 @@ final class WindowManager {
         "Pocket.windowScale.\(mode.rawValue)"
     }
 
-    private var workspaceWidthKey: String { "Pocket.workspaceWidth" }
-    private var workspaceHeightKey: String { "Pocket.workspaceHeight" }
-
     private func configureChrome(
         for mode: PresentationMode,
         orientation: DeviceOrientation,
         window: NSWindow
     ) {
-        let isWorkspace = mode == .workspace
-
-        if isWorkspace {
-            window.styleMask.remove(.borderless)
-            window.styleMask.insert(.titled)
-            window.styleMask.insert(.resizable)
-            window.styleMask.insert(.fullSizeContentView)
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
-            window.hasShadow = true
-            window.backgroundColor = .clear
-            window.isOpaque = false
-            window.contentAspectRatio = .zero
-            window.contentView?.additionalSafeAreaInsets = NSEdgeInsets(
-                top: 0,
-                left: 0,
-                bottom: 0,
-                right: 0
-            )
-            setStandardWindowButtonsHidden(false, on: window)
-        } else {
-            // Keep a hidden titlebar in compact modes so AppKit can make the
-            // window key and forward keyboard events to WKWebView controls.
-            // The titlebar is transparent and the content fills the whole
-            // window, so this remains visually frameless.
-            window.styleMask.remove(.borderless)
-            window.styleMask.insert(.titled)
-            window.styleMask.insert(.resizable)
-            window.styleMask.insert(.fullSizeContentView)
-            window.titleVisibility = .hidden
-            window.titlebarAppearsTransparent = true
-            window.hasShadow = false
-            window.backgroundColor = .clear
-            window.isOpaque = false
-            window.contentAspectRatio = mode.contentSize(for: orientation)
-            removeSafeAreaInsets(from: window)
-            setStandardWindowButtonsHidden(true, on: window)
-        }
-    }
-
-    private func removeSafeAreaInsets(from window: NSWindow) {
-        guard let contentView = window.contentView else { return }
-        let insets = contentView.safeAreaInsets
-        contentView.additionalSafeAreaInsets = NSEdgeInsets(
-            top: -insets.top,
-            left: -insets.left,
-            bottom: -insets.bottom,
-            right: -insets.right
-        )
-        contentView.needsLayout = true
-        contentView.layoutSubtreeIfNeeded()
+        // Style changes can reset AppKit's Space behavior. Reapply the policy
+        // after changing modes without touching the window's position.
+        defer { setAlwaysOnTop(alwaysOnTop) }
+        // Keep the titlebar transparent and above the content view. Native
+        // close/minimize controls are revealed only while the window is hovered.
+        window.styleMask.remove(.borderless)
+        window.styleMask.insert(.titled)
+        window.styleMask.insert(.resizable)
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.hasShadow = false
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.contentAspectRatio = mode.contentSize(for: orientation)
+        setStandardWindowButtonsHidden(true, on: window)
     }
 
     private func setStandardWindowButtonsHidden(_ hidden: Bool, on window: NSWindow) {
@@ -320,11 +243,11 @@ final class WindowManager {
 }
 
 final class WindowDragView: NSView {
-    private var dragStartLocation: NSPoint?
-    private var windowStartOrigin: NSPoint?
     var showsIndicator = false {
         didSet {
-            needsDisplay = true
+            if showsIndicator != oldValue {
+                needsDisplay = true
+            }
         }
     }
 
@@ -340,7 +263,8 @@ final class WindowDragView: NSView {
         layer?.backgroundColor = NSColor.black.withAlphaComponent(0.001).cgColor
     }
 
-    override var mouseDownCanMoveWindow: Bool { true }
+    // This view explicitly starts a native drag; do not also start a background drag.
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
@@ -371,29 +295,7 @@ final class WindowDragView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        guard let window else { return }
-
-        dragStartLocation = window.convertPoint(toScreen: event.locationInWindow)
-        windowStartOrigin = window.frame.origin
-        NSCursor.closedHand.push()
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let dragStartLocation, let windowStartOrigin, let window else { return }
-
-        let currentLocation = window.convertPoint(toScreen: event.locationInWindow)
-        window.setFrameOrigin(
-            NSPoint(
-                x: windowStartOrigin.x + currentLocation.x - dragStartLocation.x,
-                y: windowStartOrigin.y + currentLocation.y - dragStartLocation.y
-            )
-        )
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        dragStartLocation = nil
-        windowStartOrigin = nil
-        NSCursor.pop()
+        window?.performDrag(with: event)
     }
 
     override func resetCursorRects() {
@@ -459,11 +361,11 @@ final class HoverTrackingNSView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        updateHoverState(true)
+        updateHoverState(atScreenLocation: NSEvent.mouseLocation)
     }
 
     override func mouseExited(with event: NSEvent) {
-        updateHoverState(false)
+        updateHoverState(atScreenLocation: NSEvent.mouseLocation)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -485,8 +387,8 @@ final class HoverTrackingNSView: NSView {
             return
         }
 
-        let point = convert(event.locationInWindow, from: nil)
-        updateHoverState(bounds.contains(point))
+        let screenLocation = window.convertPoint(toScreen: event.locationInWindow)
+        updateHoverState(window.frame.contains(screenLocation))
     }
 
     private func updateHoverState(atScreenLocation location: NSPoint) {
@@ -495,9 +397,7 @@ final class HoverTrackingNSView: NSView {
             return
         }
 
-        let windowPoint = window.convertPoint(fromScreen: location)
-        let point = convert(windowPoint, from: nil)
-        updateHoverState(bounds.contains(point))
+        updateHoverState(window.frame.contains(location))
     }
 
     private func updateHoverState(_ hovering: Bool) {

@@ -1,0 +1,9 @@
+# Pocket app icon
+
+Generated with the built-in image generation tool. Source artwork: `AppIcon-source.png`; packaged icon: `AppIcon.icns`.
+
+The rounded tile occupies approximately 81% of the canvas width. The outer corners and margins are transparent, so the icon has a comparable visible size and silhouette to the neighboring macOS Dock icons.
+
+## Generation prompt
+
+Create a single production-ready macOS Dock app icon for Pocket, an app that keeps multiple websites in a small floating window. Redesign the mark to be simple and intuitive: two small overlapping ivory browser-window cards emerging from a bold coral-orange pocket with a shallow curved top and softly rounded base. Front card has only three tiny browser chrome dots and a single simple blue/teal rounded tile, no words. No leather stitches or tiny illustrative details. The icon must match standard macOS icons such as Calendar and Terminal in the Dock: one dark graphite-to-navy rounded-square tile occupying approximately 84% of the square canvas, centered with an 8% transparent margin on ALL FOUR SIDES. Tile corners have a broad approximately 22% corner radius like macOS app icons. Everything outside the rounded-square tile, including its curved corners, must be genuine alpha transparency. The tile itself has a subtle beveled edge highlight, NOT a white outline border or a second outer frame. The pocket/window symbol is centered and occupies around 70% of the tile, bold clear silhouette with restrained dimensional shading, beautifully balanced native macOS app icon styling. Square 1024-style composition, straight-on view. No surrounding background rectangle, no opaque canvas corners, no lettering, no words, no logo of any other app, no external glow. This must be a cutout rounded-square app icon on transparent background, not an illustration of an icon.

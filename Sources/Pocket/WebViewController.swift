@@ -1,6 +1,27 @@
 import Foundation
 import WebKit
 
+final class ResponsiveWebView: WKWebView {
+    var onViewportSizeChanged: (() -> Void)?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previousSize = frame.size
+        super.setFrameSize(newSize)
+        if previousSize != newSize {
+            onViewportSizeChanged?()
+        }
+    }
+}
+
+private final class ViewportMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var controller: WebViewController?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame else { return }
+        controller?.scheduleViewportUpdate()
+    }
+}
+
 final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let app: SimulatedApp
     let webView: WKWebView
@@ -13,6 +34,11 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     @Published private(set) var canGoForward = false
 
     private var progressObservation: NSKeyValueObservation?
+    private var canGoBackObservation: NSKeyValueObservation?
+    private var canGoForwardObservation: NSKeyValueObservation?
+    private var viewportUpdate: DispatchWorkItem?
+    private var viewportGeneration = 0
+    private var minimumLayoutWidth: CGFloat = 0
 
     init(app: SimulatedApp) {
         self.app = app
@@ -32,26 +58,50 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
             )
         )
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let viewportHandler = ViewportMessageHandler()
+        if app.id == SimulatedApp.whatsapp.id {
+            configuration.userContentController.add(viewportHandler, contentWorld: .defaultClient, name: "pocketViewport")
+            configuration.userContentController.addUserScript(WKUserScript(
+                source: Self.viewportObserverScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true,
+                in: .defaultClient
+            ))
+        }
+
+        let webView = ResponsiveWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.customUserAgent = app.customUserAgent
-        webView.pageZoom = app.id == SimulatedApp.whatsapp.id ? 0.52 : 1.0
+        webView.pageZoom = 1.0
         webView.setValue(false, forKey: "drawsBackground")
         self.webView = webView
 
         super.init()
 
+        viewportHandler.controller = self
+        webView.onViewportSizeChanged = { [weak self] in
+            self?.scheduleViewportUpdate()
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        progressObservation = webView.observe(\WKWebView.estimatedProgress, options: [.new]) { [weak self] webView, _ in
+        progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, _ in
             self?.loadingProgress = webView.estimatedProgress
+        }
+        canGoBackObservation = webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] _, change in
+            self?.canGoBack = change.newValue ?? false
+        }
+        canGoForwardObservation = webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self] _, change in
+            self?.canGoForward = change.newValue ?? false
         }
 
         load()
     }
 
     deinit {
+        viewportUpdate?.cancel()
         progressObservation?.invalidate()
+        canGoBackObservation?.invalidate()
+        canGoForwardObservation?.invalidate()
     }
 
     func load() {
@@ -74,13 +124,15 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     }
 
     func setPresentationMode(_ mode: PresentationMode) {
-        guard app.id == SimulatedApp.whatsapp.id else { return }
-        webView.pageZoom = mode == .device ? 0.52 : 1.0
+        scheduleViewportUpdate()
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoading = true
         errorMessage = nil
+        viewportGeneration += 1
+        minimumLayoutWidth = 0
+        webView.pageZoom = 1.0
         syncHistoryState()
     }
 
@@ -88,6 +140,7 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         isLoading = false
         pageTitle = webView.title?.isEmpty == false ? webView.title! : app.title
         syncHistoryState()
+        scheduleViewportUpdate()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -113,6 +166,86 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         }
         return nil
     }
+
+    fileprivate func scheduleViewportUpdate() {
+        guard app.id == SimulatedApp.whatsapp.id else { return }
+        viewportGeneration += 1
+        let generation = viewportGeneration
+        viewportUpdate?.cancel()
+        let update = DispatchWorkItem { [weak self] in
+            self?.fitDesktopLayout(generation: generation)
+        }
+        viewportUpdate = update
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: update)
+    }
+
+    private func fitDesktopLayout(generation: Int) {
+        let width = webView.bounds.width
+        guard width > 0 else { return }
+
+        if minimumLayoutWidth > 0 {
+            applyPageZoom(min(1, width / minimumLayoutWidth))
+        }
+        webView.evaluateJavaScript(Self.viewportMeasurementScript, in: nil, in: .defaultClient) { [weak self] result in
+            guard let self, self.viewportGeneration == generation,
+                  case .success(let value) = result,
+                  let metrics = value as? [String: Any],
+                  let viewport = metrics["viewport"] as? Double,
+                  let content = metrics["content"] as? Double,
+                  viewport > 0, content.isFinite else { return }
+
+            if let minimum = metrics["minimum"] as? Double, minimum > 0 {
+                self.minimumLayoutWidth = minimum
+            }
+            if content > viewport + 1 {
+                // CSS pixels reflect page zoom. Recover the required width at
+                // 100% so enlarging the window can restore normal text size.
+                self.minimumLayoutWidth = max(self.minimumLayoutWidth, content)
+                self.applyPageZoom(min(1, self.webView.pageZoom * viewport / content))
+            } else if self.minimumLayoutWidth > 0 {
+                self.applyPageZoom(min(1, self.webView.bounds.width / self.minimumLayoutWidth))
+            }
+        }
+    }
+
+    private func applyPageZoom(_ zoom: CGFloat) {
+        let zoom = min(max(zoom, 0.1), 1)
+        if abs(webView.pageZoom - zoom) > 0.005 {
+            webView.pageZoom = zoom
+        }
+    }
+
+    private static let viewportMeasurementScript = #"""
+    (() => {
+        const root = document.documentElement;
+        const elements = [root, document.body, document.getElementById('app')].filter(Boolean);
+        return {
+            viewport: root.clientWidth,
+            content: Math.max(...elements.map(element => element.scrollWidth)),
+            minimum: Math.max(0, ...elements.map(element => parseFloat(getComputedStyle(element).minWidth) || 0))
+        };
+    })()
+    """#
+
+    private static let viewportObserverScript = #"""
+    (() => {
+        let pending = false;
+        const notify = () => {
+            if (pending) return;
+            pending = true;
+            setTimeout(() => {
+                pending = false;
+                window.webkit.messageHandlers.pocketViewport.postMessage(null);
+            }, 80);
+        };
+        new ResizeObserver(notify).observe(document.documentElement);
+        new MutationObserver(notify).observe(document.documentElement, {
+            subtree: true, childList: true, attributes: true,
+            attributeFilter: ['class', 'style']
+        });
+        notify();
+    })();
+    """#
 
     private func userFacingMessage(for error: Error) -> String {
         let nsError = error as NSError

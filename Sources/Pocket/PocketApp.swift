@@ -3,59 +3,55 @@ import SwiftUI
 @main
 struct PocketApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var workspace = WorkspaceModel()
+    @ObservedObject private var model = PocketModel.shared
 
     var body: some Scene {
-        WindowGroup {
-            AppRootView(model: workspace)
+        // AppDelegate owns the floating panel; SwiftUI supplies the app menus.
+        Settings {
+            EmptyView()
         }
-        .defaultSize(width: 344, height: 780)
-        .windowStyle(.hiddenTitleBar)
         .commands {
+            CommandGroup(replacing: .appSettings) {}
             CommandMenu("Pocket") {
                 Section("Presentation") {
                     Button("Device") {
-                        workspace.presentationMode = .device
+                        model.presentationMode = .device
                     }
                     .keyboardShortcut("1", modifiers: [.command])
 
                     Button("Screen") {
-                        workspace.presentationMode = .screen
+                        model.presentationMode = .screen
                     }
                     .keyboardShortcut("2", modifiers: [.command])
 
-                    Button("Workspace") {
-                        workspace.presentationMode = .workspace
-                    }
-                    .keyboardShortcut("3", modifiers: [.command])
                 }
 
                 Section("Orientation") {
                     Button("Portrait") {
-                        workspace.orientation = .portrait
+                        model.orientation = .portrait
                     }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
 
                     Button("Landscape") {
-                        workspace.orientation = .landscape
+                        model.orientation = .landscape
                     }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
                 }
 
                 Section("Navigation") {
                     Button("Back") {
-                        workspace.controller(for: workspace.selectedApp).goBack()
+                        model.controller(for: model.selectedApp).goBack()
                     }
                     .keyboardShortcut("[", modifiers: [.command])
 
                     Button("Forward") {
-                        workspace.controller(for: workspace.selectedApp).goForward()
+                        model.controller(for: model.selectedApp).goForward()
                     }
                     .keyboardShortcut("]", modifiers: [.command])
                 }
 
                 Section("Window") {
-                    Toggle("Always on Top", isOn: $workspace.alwaysOnTop)
+                    Toggle("Always on Top", isOn: $model.alwaysOnTop)
                         .keyboardShortcut("t", modifiers: [.control, .option, .command])
                 }
             }
