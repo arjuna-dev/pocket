@@ -1,6 +1,18 @@
 import Foundation
 import WebKit
 
+final class ResponsiveWebView: WKWebView {
+    var onViewportSizeChanged: (() -> Void)?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let previousSize = frame.size
+        super.setFrameSize(newSize)
+        if previousSize != newSize {
+            onViewportSizeChanged?()
+        }
+    }
+}
+
 final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
     let app: SimulatedApp
     let webView: WKWebView
@@ -13,13 +25,16 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     @Published private(set) var canGoForward = false
 
     private var progressObservation: NSKeyValueObservation?
+    private var canGoBackObservation: NSKeyValueObservation?
+    private var canGoForwardObservation: NSKeyValueObservation?
+    private static let minimumViewportSize = CGSize(width: 480, height: 300)
 
-    init(app: SimulatedApp) {
+    init(app: SimulatedApp, websiteDataStore: WKWebsiteDataStore? = nil, loadImmediately: Bool = true) {
         self.app = app
         self.pageTitle = app.title
 
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = WKWebsiteDataStore(
+        configuration.websiteDataStore = websiteDataStore ?? WKWebsiteDataStore(
             forIdentifier: UUID(uuidString: app.dataStoreKey)!
         )
         configuration.mediaTypesRequiringUserActionForPlayback = []
@@ -32,26 +47,39 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
             )
         )
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = ResponsiveWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
         webView.customUserAgent = app.customUserAgent
-        webView.pageZoom = app.id == SimulatedApp.whatsapp.id ? 0.52 : 1.0
+        webView.pageZoom = 1.0
         webView.setValue(false, forKey: "drawsBackground")
         self.webView = webView
 
         super.init()
 
+        webView.onViewportSizeChanged = { [weak self] in
+            self?.applyViewportZoom()
+        }
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        progressObservation = webView.observe(\WKWebView.estimatedProgress, options: [.new]) { [weak self] webView, _ in
+        progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, _ in
             self?.loadingProgress = webView.estimatedProgress
         }
+        canGoBackObservation = webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] _, change in
+            self?.canGoBack = change.newValue ?? false
+        }
+        canGoForwardObservation = webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self] _, change in
+            self?.canGoForward = change.newValue ?? false
+        }
 
-        load()
+        if loadImmediately {
+            load()
+        }
     }
 
     deinit {
         progressObservation?.invalidate()
+        canGoBackObservation?.invalidate()
+        canGoForwardObservation?.invalidate()
     }
 
     func load() {
@@ -74,13 +102,13 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     }
 
     func setPresentationMode(_ mode: PresentationMode) {
-        guard app.id == SimulatedApp.whatsapp.id else { return }
-        webView.pageZoom = mode == .device ? 0.52 : 1.0
+        applyViewportZoom()
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoading = true
         errorMessage = nil
+        applyViewportZoom()
         syncHistoryState()
     }
 
@@ -88,6 +116,7 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         isLoading = false
         pageTitle = webView.title?.isEmpty == false ? webView.title! : app.title
         syncHistoryState()
+        applyViewportZoom()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -112,6 +141,22 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
             webView.load(navigationAction.request)
         }
         return nil
+    }
+
+    private func applyViewportZoom() {
+        let size = webView.bounds.size
+        guard size.width > 0, size.height > 0 else { return }
+        // Let sites reflow normally until either dimension becomes too small.
+        // Below that threshold, zoom out to retain a usable CSS viewport.
+        let zoom = min(1, size.width / Self.minimumViewportSize.width, size.height / Self.minimumViewportSize.height)
+        applyPageZoom(zoom)
+    }
+
+    private func applyPageZoom(_ zoom: CGFloat) {
+        let zoom = min(max(zoom, 0.1), 1)
+        if abs(webView.pageZoom - zoom) > 0.005 {
+            webView.pageZoom = zoom
+        }
     }
 
     private func userFacingMessage(for error: Error) -> String {

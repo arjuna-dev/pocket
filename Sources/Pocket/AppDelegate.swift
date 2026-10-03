@@ -1,7 +1,15 @@
 import AppKit
+import SwiftUI
+
+// A panel is used so the pinned window can join full-screen Spaces. Its
+// activation behavior is switched with the Always on Top setting.
+final class PocketPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var windowObserver: NSObjectProtocol?
+    private var panel: PocketPanel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
@@ -9,27 +17,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = icon
         }
 
-        windowObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didBecomeKeyNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let window = notification.object as? NSWindow else { return }
-            self?.configure(window: window)
-        }
+        let model = PocketModel.shared
+        let panel = PocketPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 344, height: 780),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable,
+                        .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.contentView = NSHostingView(rootView: AppRootView(model: model))
+        self.panel = panel
 
-        DispatchQueue.main.async { [weak self] in
-            NSApp.windows.forEach { self?.configure(window: $0) }
-        }
+        WindowManager.shared.attach(window: panel)
+        WindowManager.shared.setAlwaysOnTop(model.alwaysOnTop)
+        WindowManager.shared.restoreSize(
+            for: model.presentationMode,
+            orientation: model.orientation,
+            animated: false
+        )
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
     }
 
-    deinit {
-        if let windowObserver {
-            NotificationCenter.default.removeObserver(windowObserver)
-        }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        panel?.makeKeyAndOrderFront(nil)
+        return false
     }
 
-    private func configure(window: NSWindow) {
-        WindowManager.shared.attach(window: window)
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // The utility panel is at normal level when unpinned. Bring it forward
+        // when Pocket is selected so another app's window cannot cover it.
+        panel?.makeKeyAndOrderFront(nil)
     }
 }
