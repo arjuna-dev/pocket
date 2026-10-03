@@ -1,0 +1,43 @@
+{
+  "": {
+    "dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Pocket.d",
+    "object": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Pocket.o",
+    "swift-dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/master.swiftdeps"
+  },
+  "/Users/fuxamgmbh/Desktop/projects/pocket/Sources/Pocket/AppDelegate.swift": {
+    "object": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/AppDelegate.swift.o",
+    "swiftmodule": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/AppDelegate~partial.swiftmodule",
+    "swift-dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/AppDelegate.swiftdeps",
+    "diagnostics": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/AppDelegate.dia"
+  },
+  "/Users/fuxamgmbh/Desktop/projects/pocket/Sources/Pocket/Models.swift": {
+    "object": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Models.swift.o",
+    "swiftmodule": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Models~partial.swiftmodule",
+    "swift-dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Models.swiftdeps",
+    "diagnostics": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Models.dia"
+  },
+  "/Users/fuxamgmbh/Desktop/projects/pocket/Sources/Pocket/PocketApp.swift": {
+    "object": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/PocketApp.swift.o",
+    "swiftmodule": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/PocketApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/PocketApp.swiftdeps",
+    "diagnostics": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/PocketApp.dia"
+  },
+  "/Users/fuxamgmbh/Desktop/projects/pocket/Sources/Pocket/Views.swift": {
+    "object": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Views.swift.o",
+    "swiftmodule": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Views~partial.swiftmodule",
+    "swift-dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Views.swiftdeps",
+    "diagnostics": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/Views.dia"
+  },
+  "/Users/fuxamgmbh/Desktop/projects/pocket/Sources/Pocket/WebViewController.swift": {
+    "object": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WebViewController.swift.o",
+    "swiftmodule": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WebViewController~partial.swiftmodule",
+    "swift-dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WebViewController.swiftdeps",
+    "diagnostics": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WebViewController.dia"
+  },
+  "/Users/fuxamgmbh/Desktop/projects/pocket/Sources/Pocket/WindowManager.swift": {
+    "object": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WindowManager.swift.o",
+    "swiftmodule": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WindowManager~partial.swiftmodule",
+    "swift-dependencies": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WindowManager.swiftdeps",
+    "diagnostics": "/Users/fuxamgmbh/Desktop/projects/pocket/.build/arm64-apple-macosx/release/Pocket.build/WindowManager.dia"
+  }
+}

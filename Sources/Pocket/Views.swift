@@ -386,11 +386,11 @@ struct CompactWebsiteManagerButton: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.78))
                 .padding(.horizontal, 8)
-                .frame(height: 32)
-                .background(Color(red: 0.78, green: 0.31, blue: 0.20))
+                .frame(height: 28)
+                .background(Color.white.opacity(0.06))
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)

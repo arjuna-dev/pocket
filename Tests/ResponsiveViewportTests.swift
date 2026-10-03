@@ -37,43 +37,45 @@ struct ResponsiveViewportTests {
     }
 
     @MainActor static func run() async throws {
-        let responsive = WebViewController(app: .youtube, websiteDataStore: .nonPersistent(), loadImmediately: false)
-        responsive.webView.setFrameSize(NSSize(width: 390, height: 700))
-        responsive.webView.loadHTMLString("<!doctype html><style>body{margin:0}main{width:100%;height:100vh}</style><main>Responsive fixture</main>", baseURL: nil)
-        try await waitFor("Narrow viewport didn't activate media query") {
-            let m = try await metrics(responsive.webView)
-            return m["narrow"] as? Bool == true && m["width"] as? Int == 390
-        }
-        responsive.webView.setFrameSize(NSSize(width: 900, height: 400))
-        try await waitFor("Resizing didn't update the website viewport") {
-            let m = try await metrics(responsive.webView)
-            return m["narrow"] as? Bool == false && m["width"] as? Int == 900 && m["height"] as? Int == 400
-        }
-        guard responsive.webView.pageZoom == 1 else { throw Failure(description: "Responsive website was unnecessarily zoomed") }
-        print("PASS: responsive media queries and viewport dimensions update")
+        for app in [SimulatedApp.youtube, SimulatedApp.whatsapp] {
+            let controller = WebViewController(app: app, websiteDataStore: .nonPersistent(), loadImmediately: false)
+            let view = controller.webView
+            view.setFrameSize(NSSize(width: 600, height: 400))
+            view.loadHTMLString("<!doctype html><style id='fixture-style'>body{margin:0}main{width:100%;height:100vh}</style><main>Responsive fixture</main>", baseURL: nil)
+            try await waitFor("\(app.title): responsive viewport did not resize normally") {
+                let m = try await metrics(view)
+                return m["width"] as? Int == 600 && m["narrow"] as? Bool == false && view.pageZoom == 1
+            }
 
-        let desktop = WebViewController(app: .whatsapp, websiteDataStore: .nonPersistent(), loadImmediately: false)
-        desktop.webView.setFrameSize(NSSize(width: 390, height: 700))
-        desktop.webView.loadHTMLString("<!doctype html><style id='fixture-style'>html,body{margin:0;min-width:1000px}#app{min-width:1000px;height:100vh}</style><main id='app'>Desktop fixture</main>", baseURL: nil)
-        try await waitFor("Desktop layout didn't fit a narrow window") {
-            abs(desktop.webView.pageZoom - 0.39) < 0.015
+            view.setFrameSize(NSSize(width: 390, height: 700))
+            try await waitFor("\(app.title): narrow window did not retain the minimum viewport") {
+                let m = try await metrics(view)
+                return abs((m["width"] as? Int ?? 0) - 480) <= 1 && m["narrow"] as? Bool == true
+            }
+
+            view.setFrameSize(NSSize(width: 240, height: 150))
+            try await waitFor("\(app.title): small window did not shrink to preserve both dimensions") {
+                let m = try await metrics(view)
+                return abs((m["width"] as? Int ?? 0) - 480) <= 1 && abs((m["height"] as? Int ?? 0) - 300) <= 1
+            }
+
+            view.setFrameSize(NSSize(width: 900, height: 240))
+            try await waitFor("\(app.title): short window did not preserve minimum height") {
+                let m = try await metrics(view)
+                return abs((m["height"] as? Int ?? 0) - 300) <= 1
+            }
+
+            view.setFrameSize(NSSize(width: 900, height: 400))
+            try await waitFor("\(app.title): enlarged window did not restore responsive sizing") {
+                let m = try await metrics(view)
+                return m["width"] as? Int == 900 && m["height"] as? Int == 400 && view.pageZoom == 1
+            }
+            _ = try await view.evaluateJavaScript("document.getElementById('fixture-style').textContent='html,body{margin:0;min-width:1200px}'")
+            try await waitFor("\(app.title): website minimum width changed the shared zoom policy") {
+                let m = try await metrics(view)
+                return (m["content"] as? Int ?? 0) >= 1200 && view.pageZoom == 1
+            }
+            print("PASS: \(app.title) uses shared responsive and minimum viewport behavior")
         }
-        desktop.webView.setFrameSize(NSSize(width: 700, height: 350))
-        try await waitFor("Desktop zoom didn't follow resizing") {
-            abs(desktop.webView.pageZoom - 0.7) < 0.015
-        }
-        desktop.webView.setFrameSize(NSSize(width: 1300, height: 700))
-        try await waitFor("Desktop zoom didn't return to normal in a large window") {
-            abs(desktop.webView.pageZoom - 1) < 0.005
-        }
-        desktop.webView.setFrameSize(NSSize(width: 400, height: 700))
-        try await waitFor("Desktop layout didn't fit after shrinking again") {
-            abs(desktop.webView.pageZoom - 0.4) < 0.015
-        }
-        _ = try await desktop.webView.evaluateJavaScript("document.getElementById('fixture-style').textContent='html,body{margin:0;min-width:1200px}#app{min-width:1200px;height:100vh}'")
-        try await waitFor("Fit didn't update after dynamic page layout changed") {
-            abs(desktop.webView.pageZoom - 1.0 / 3.0) < 0.015
-        }
-        print("PASS: desktop fitting updates on resize and dynamic content changes")
     }
 }
