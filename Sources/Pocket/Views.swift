@@ -4,6 +4,7 @@ import WebKit
 
 private extension Color {
     static let pocketBackground = Color(red: 0.055, green: 0.063, blue: 0.082)
+    static let pocketChrome = Color(red: 0.145, green: 0.155, blue: 0.175)
     static let pocketMuted = Color(red: 0.48, green: 0.50, blue: 0.57)
 }
 
@@ -74,81 +75,104 @@ struct AppRootView: View {
 struct PocketStageView: View {
     @ObservedObject var model: PocketModel
     @State private var controlsVisible = false
+    @State private var hoveredSlot: Int?
     @State private var siteMenuSlot: Int?
     @State private var layoutMenuOpen = false
 
     var body: some View {
         GeometryReader { proxy in
             let count = max(model.visibleSlots.count, 1)
-            let multiple = count > 1
             let availableWidth = max(proxy.size.width, 1)
+            let availableHeight = max(proxy.size.height, 1)
+            let stageSize = CGSize(width: availableWidth, height: availableHeight)
             let showsChrome = controlsVisible || layoutMenuOpen || siteMenuSlot != nil
-            let reservedBottomHeight = CompactControls.bayHeight(for: availableWidth)
-            let bottomHeight = multiple ? (showsChrome ? reservedBottomHeight : 0) : reservedBottomHeight
-            let windowBarHeight = multiple && showsChrome ? CompactLayout.windowControlsBayHeight : 0
-            let gridHeight = max(proxy.size.height - windowBarHeight - bottomHeight, 1)
-            let grid = gridMetrics(availableWidth: availableWidth, gridHeight: gridHeight, count: count)
+            let grid = gridMetrics(count: count)
+            let gapX: CGFloat = grid.columns > 1 ? CompactLayout.paneGap : 0
+            let gapY: CGFloat = grid.rows > 1 ? CompactLayout.paneGap : 0
 
-            VStack(spacing: 0) {
-                if multiple && showsChrome {
-                    WindowTrafficLights()
-                        .padding(.leading, 12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(height: windowBarHeight)
-                        .background(Color.pocketBackground)
-                        .transition(.opacity)
-                }
-
-                VStack(spacing: grid.gapY) {
-                    ForEach(0..<grid.rows, id: \.self) { row in
-                        HStack(spacing: grid.gapX) {
-                            ForEach(0..<grid.columns, id: \.self) { column in
-                                if let slot = slot(row: row, column: column, count: count) {
-                                    ScreenPane(
-                                        model: model,
-                                        slot: slot,
-                                        showsChrome: multiple || showsChrome,
-                                        showsWindowButtons: !multiple,
-                                        isSiteMenuPresented: siteMenuBinding(for: slot.index)
-                                    )
-                                    .frame(width: grid.paneWidth, height: grid.paneHeight)
-                                } else {
-                                    Color.clear
-                                        .frame(width: grid.paneWidth, height: grid.paneHeight)
-                                }
+            VStack(spacing: gapY) {
+                ForEach(0..<grid.rows, id: \.self) { row in
+                    HStack(spacing: gapX) {
+                        ForEach(0..<grid.columns, id: \.self) { column in
+                            let paneWidth = paneLength(
+                                index: column,
+                                count: grid.columns,
+                                total: availableWidth,
+                                gap: gapX
+                            )
+                            let paneHeight = paneLength(
+                                index: row,
+                                count: grid.rows,
+                                total: availableHeight,
+                                gap: gapY
+                            )
+                            if let slot = slot(row: row, column: column, count: count) {
+                                ScreenPane(
+                                    model: model,
+                                    slot: slot,
+                                    showsWindowButtons: true,
+                                    showsPaneChrome: showsPaneChrome(for: slot.index),
+                                    isSiteMenuPresented: siteMenuBinding(for: slot.index)
+                                )
+                                .frame(width: paneWidth, height: paneHeight)
+                            } else {
+                                Color.clear
+                                    .frame(width: paneWidth, height: paneHeight)
                             }
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-                ZStack {
-                    if showsChrome {
-                        CompactControls(
-                            model: model,
-                            isLayoutMenuPresented: $layoutMenuOpen
-                        )
-                        .transition(.opacity)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: bottomHeight)
-                .background(showsChrome ? Color.pocketBackground : Color.clear)
             }
-            .frame(width: availableWidth, height: proxy.size.height, alignment: .top)
+            .frame(width: availableWidth, height: availableHeight, alignment: .topLeading)
+            .background(model.presentationMode == .screen ? Color.black : Color.clear)
+            .overlay(alignment: .bottom) {
+                if showsChrome {
+                    Color.pocketChrome
+                        .frame(height: CompactLayout.controlsStripHeight)
+                        .frame(maxWidth: .infinity)
+                        .overlay {
+                            CompactControls(
+                                model: model,
+                                isLayoutMenuPresented: $layoutMenuOpen
+                            )
+                        }
+                        .overlay(alignment: .top) {
+                            Rectangle()
+                                .fill(Color.white.opacity(0.08))
+                                .frame(height: 1)
+                        }
+                        .transition(.move(edge: .bottom))
+                }
+            }
+            .animation(.easeOut(duration: 0.22), value: showsChrome)
+            .overlay {
+                HoverTrackingView(
+                    onHoverChanged: { isHovering in
+                        guard controlsVisible != isHovering else { return }
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            controlsVisible = isHovering
+                            if !isHovering {
+                                hoveredSlot = nil
+                            }
+                        }
+                    },
+                    onLocationChanged: { point in
+                        let next = point.flatMap { slotIndex(at: $0, size: stageSize, count: count) }
+                        guard hoveredSlot != next else { return }
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            hoveredSlot = next
+                        }
+                        if let next {
+                            model.focusedSlotIndex = next
+                        }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityHidden(true)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.clear)
-        .overlay {
-            HoverTrackingView { isHovering in
-                guard controlsVisible != isHovering else { return }
-                withAnimation(.easeOut(duration: 0.16)) {
-                    controlsVisible = isHovering
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityHidden(true)
-        }
+        .background(model.presentationMode == .screen ? Color.black : Color.clear)
     }
 
     private func siteMenuBinding(for index: Int) -> Binding<Bool> {
@@ -165,18 +189,19 @@ struct PocketStageView: View {
         )
     }
 
-    private func gridMetrics(
-        availableWidth: CGFloat,
-        gridHeight: CGFloat,
-        count: Int
-    ) -> (columns: Int, rows: Int, paneWidth: CGFloat, paneHeight: CGFloat, gapX: CGFloat, gapY: CGFloat) {
+    private func gridMetrics(count: Int) -> (columns: Int, rows: Int) {
         let columns = count <= 2 ? 1 : 2
         let rows = count == 1 ? 1 : 2
-        let gapX: CGFloat = columns > 1 ? CompactLayout.paneGap : 0
-        let gapY: CGFloat = rows > 1 ? CompactLayout.paneGap : 0
-        let paneWidth = max((availableWidth - gapX * CGFloat(columns - 1)) / CGFloat(columns), 1)
-        let paneHeight = max((gridHeight - gapY * CGFloat(rows - 1)) / CGFloat(rows), 1)
-        return (columns, rows, paneWidth, paneHeight, gapX, gapY)
+        return (columns, rows)
+    }
+
+    private func paneLength(index: Int, count: Int, total: CGFloat, gap: CGFloat) -> CGFloat {
+        let available = max(total - gap * CGFloat(max(count - 1, 0)), 1)
+        let base = floor(available / CGFloat(count))
+        if index == count - 1 {
+            return available - base * CGFloat(count - 1)
+        }
+        return base
     }
 
     private func slot(row: Int, column: Int, count: Int) -> ScreenSlot? {
@@ -184,31 +209,62 @@ struct PocketStageView: View {
         guard index < count else { return nil }
         return model.slots.first { $0.index == index }
     }
+
+    private func showsPaneChrome(for index: Int) -> Bool {
+        siteMenuSlot == index || (controlsVisible && hoveredSlot == index)
+    }
+
+    private func slotIndex(at point: CGPoint, size: CGSize, count: Int) -> Int? {
+        let grid = gridMetrics(count: count)
+        let gapX: CGFloat = grid.columns > 1 ? CompactLayout.paneGap : 0
+        let gapY: CGFloat = grid.rows > 1 ? CompactLayout.paneGap : 0
+        guard let column = paneIndex(at: point.x, count: grid.columns, total: size.width, gap: gapX),
+              let row = paneIndex(at: point.y, count: grid.rows, total: size.height, gap: gapY)
+        else {
+            return nil
+        }
+
+        let index = column == 0 ? row : 2 + row
+        guard index < count else { return nil }
+        return index
+    }
+
+    private func paneIndex(at position: CGFloat, count: Int, total: CGFloat, gap: CGFloat) -> Int? {
+        var origin: CGFloat = 0
+        for index in 0..<count {
+            let length = paneLength(index: index, count: count, total: total, gap: gap)
+            if position >= origin && position < origin + length {
+                return index
+            }
+            origin += length + gap
+        }
+        return nil
+    }
 }
 
 private struct ScreenPane: View {
     @ObservedObject var model: PocketModel
     @ObservedObject var slot: ScreenSlot
-    let showsChrome: Bool
     var showsWindowButtons: Bool
+    var showsPaneChrome: Bool
     @Binding var isSiteMenuPresented: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
-                if showsChrome {
-                    ScreenControlsBar(
-                        model: model,
-                        slot: slot,
-                        showsWindowButtons: showsWindowButtons,
-                        isSiteMenuPresented: $isSiteMenuPresented
-                    )
-                    .padding(.horizontal, showsWindowButtons ? 12 : 8)
-                }
+            if showsPaneChrome {
+                ScreenControlsBar(
+                    model: model,
+                    slot: slot,
+                    showsWindowButtons: showsWindowButtons,
+                    isSiteMenuPresented: $isSiteMenuPresented
+                )
+                .padding(.horizontal, showsWindowButtons ? 12 : 8)
+                .frame(maxWidth: .infinity)
+                .frame(height: CompactLayout.screenBarHeight)
+                .background(Color.pocketChrome)
+                .contentShape(Rectangle())
+                .transition(.move(edge: .top))
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: CompactLayout.screenBarHeight)
-            .background(showsChrome ? Color.pocketBackground : Color.clear)
 
             Group {
                 if model.presentationMode == .device {
@@ -221,11 +277,8 @@ private struct ScreenPane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onHover { hovering in
-            if hovering, model.focusedSlotIndex != slot.index {
-                model.focusedSlotIndex = slot.index
-            }
-        }
+        .animation(.easeOut(duration: 0.22), value: showsPaneChrome)
+        .clipped()
     }
 
     private var deviceContent: some View {
@@ -288,26 +341,20 @@ struct CompactControls: View {
     @Binding var isLayoutMenuPresented: Bool
     @State private var isOrientationHovering = false
 
-    private static let orientationHoverText = "Cmd + 1 - Mobile, Cmd + 2 - Landscape"
-
-    static func bayHeight(for width: CGFloat) -> CGFloat {
-        CompactLayout.controlsBayHeight(for: width)
-    }
+    private static let orientationHoverText = "Cmd + 1 - Portrait, Cmd + 2 - Landscape"
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
             controlsBar(showsTitles: true)
             controlsBar(showsTitles: false)
         }
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private func controlsBar(showsTitles: Bool) -> some View {
         HStack(spacing: showsTitles ? 10 : 6) {
             CompactChromeButton(
                 symbol: model.orientation == .portrait ? "iphone" : "iphone.landscape",
-                title: model.orientation == .portrait ? "Mobile" : "Landscape",
+                title: model.orientation.title,
                 showsTitle: showsTitles,
                 showsHoverTitle: false
             ) {
@@ -338,15 +385,6 @@ struct CompactControls: View {
             }
         }
         .padding(.horizontal, showsTitles ? 12 : 10)
-        .padding(.vertical, 8)
-        .background {
-            Capsule()
-                .fill(Color(red: 0.145, green: 0.155, blue: 0.175))
-        }
-        .overlay {
-            Capsule()
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        }
         .overlay(alignment: .top) {
             if isOrientationHovering {
                 Text(Self.orientationHoverText)
@@ -1047,23 +1085,14 @@ struct WebsiteEditorSheet: View {
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(website == nil ? "Add Website" : "Edit Website")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(website == nil ? "Add Website" : "Edit Website")
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
 
-                Text("Give the site a name and URL for Pocket.")
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.pocketMuted)
-            }
-
-            Spacer()
-
-            Button("Cancel") {
-                dismiss()
-            }
-            .keyboardShortcut(.cancelAction)
+            Text("Give the site a name and URL for Pocket.")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.pocketMuted)
         }
     }
 
@@ -1092,6 +1121,11 @@ struct WebsiteEditorSheet: View {
 
     private var footer: some View {
         HStack {
+            Button("Cancel") {
+                dismiss()
+            }
+            .keyboardShortcut(.cancelAction)
+
             if let website, website.isBuiltIn {
                 Text("Built-in website")
                     .font(.system(size: 10, weight: .medium, design: .rounded))

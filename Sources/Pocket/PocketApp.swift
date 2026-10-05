@@ -24,7 +24,7 @@ struct PocketApp: App {
                 }
 
                 Section("Orientation") {
-                    Button("Mobile") {
+                    Button("Portrait") {
                         model.orientation = .portrait
                     }
                     .keyboardShortcut("1", modifiers: [.command])

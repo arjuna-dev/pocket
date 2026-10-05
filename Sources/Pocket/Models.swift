@@ -206,25 +206,11 @@ enum DeviceOrientation: String, CaseIterable, Identifiable {
 }
 
 enum CompactLayout {
-    static let controlsIdealWidth: CGFloat = 214
-    static let controlsBaseHeight: CGFloat = 48
     static let windowControlsBayHeight: CGFloat = 40
-    static let controlsHorizontalInset: CGFloat = 8
-    static let controlsBaySpacing: CGFloat = 8
-    static let paneGap: CGFloat = 6
+    static let controlsStripHeight: CGFloat = windowControlsBayHeight * 1.2
+    static let paneGap: CGFloat = 0
     static let screenBarHeight: CGFloat = windowControlsBayHeight
     static let slotCount = 4
-
-    static func controlsScale(for width: CGFloat) -> CGFloat {
-        min(
-            max((width - controlsHorizontalInset) / controlsIdealWidth, 0.1),
-            1
-        )
-    }
-
-    static func controlsBayHeight(for width: CGFloat) -> CGFloat {
-        controlsBaseHeight * controlsScale(for: width) + controlsBaySpacing
-    }
 }
 
 extension PresentationMode {
@@ -254,23 +240,15 @@ extension PresentationMode {
         switch self {
         case .device:
             let deviceSize = orientation.deviceSize
-            let width = deviceSize.width * scale * columns + gapX
-            let paneHeight = deviceSize.height * scale + CompactLayout.screenBarHeight
             return CGSize(
-                width: width,
-                height: paneHeight * rows
-                    + gapY
-                    + CompactLayout.controlsBayHeight(for: width)
+                width: deviceSize.width * scale * columns + gapX,
+                height: deviceSize.height * scale * rows + gapY
             )
         case .screen:
             let screenSize = orientation.screenSize
-            let width = screenSize.width * scale * columns + gapX
-            let paneHeight = screenSize.height * scale + CompactLayout.screenBarHeight
             return CGSize(
-                width: width,
-                height: paneHeight * rows
-                    + gapY
-                    + CompactLayout.controlsBayHeight(for: width)
+                width: screenSize.width * scale * columns + gapX,
+                height: screenSize.height * scale * rows + gapY
             )
         }
     }

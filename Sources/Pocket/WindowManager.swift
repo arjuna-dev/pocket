@@ -354,8 +354,10 @@ struct WindowDragHandle: NSViewRepresentable {
 
 final class HoverTrackingNSView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
+    var onLocationChanged: ((CGPoint?) -> Void)?
     private var mouseEventMonitor: Any?
     private var isHovering = false
+    private var lastPoint: CGPoint?
 
     deinit {
         removeMouseEventMonitor()
@@ -366,7 +368,7 @@ final class HoverTrackingNSView: NSView {
         removeMouseEventMonitor()
 
         guard window != nil else {
-            updateHoverState(false)
+            publish(hovering: false, point: nil)
             return
         }
 
@@ -376,6 +378,15 @@ final class HoverTrackingNSView: NSView {
         }
 
         updateHoverState(atScreenLocation: NSEvent.mouseLocation)
+    }
+
+    override func layout() {
+        super.layout()
+        guard window != nil else { return }
+        let location = NSEvent.mouseLocation
+        DispatchQueue.main.async { [weak self] in
+            self?.updateHoverState(atScreenLocation: location)
+        }
     }
 
     override func updateTrackingAreas() {
@@ -423,36 +434,64 @@ final class HoverTrackingNSView: NSView {
         }
 
         let screenLocation = window.convertPoint(toScreen: event.locationInWindow)
-        updateHoverState(window.frame.contains(screenLocation))
+        updateHoverState(atScreenLocation: screenLocation)
     }
 
     private func updateHoverState(atScreenLocation location: NSPoint) {
         guard let window else {
-            updateHoverState(false)
+            publish(hovering: false, point: nil)
             return
         }
 
-        updateHoverState(window.frame.contains(location))
+        let hovering = window.frame.contains(location)
+        publish(hovering: hovering, point: hovering ? swiftPoint(fromScreen: location) : nil)
     }
 
-    private func updateHoverState(_ hovering: Bool) {
-        guard isHovering != hovering else { return }
-        isHovering = hovering
-        onHoverChanged?(hovering)
+    private func swiftPoint(fromScreen location: NSPoint) -> CGPoint? {
+        guard let window, bounds.width > 1, bounds.height > 1 else { return nil }
+        let windowPoint = window.convertPoint(fromScreen: location)
+        let local = convert(windowPoint, from: nil)
+        guard bounds.contains(local) else { return nil }
+        // AppKit view coordinates grow upward. The pane grid grows downward.
+        let y = isFlipped ? local.y : bounds.height - local.y
+        return CGPoint(x: local.x, y: y)
+    }
+
+    private func publish(hovering: Bool, point: CGPoint?) {
+        if isHovering != hovering {
+            isHovering = hovering
+            onHoverChanged?(hovering)
+        }
+
+        let moved: Bool
+        switch (lastPoint, point) {
+        case (nil, nil):
+            moved = false
+        case let (previous?, next?):
+            moved = abs(previous.x - next.x) > 0.5 || abs(previous.y - next.y) > 0.5
+        default:
+            moved = true
+        }
+        guard moved else { return }
+        lastPoint = point
+        onLocationChanged?(point)
     }
 }
 
 struct HoverTrackingView: NSViewRepresentable {
     let onHoverChanged: (Bool) -> Void
+    var onLocationChanged: ((CGPoint?) -> Void)?
 
     func makeNSView(context: Context) -> HoverTrackingNSView {
         let view = HoverTrackingNSView(frame: .zero)
         view.onHoverChanged = onHoverChanged
+        view.onLocationChanged = onLocationChanged
         return view
     }
 
     func updateNSView(_ nsView: HoverTrackingNSView, context: Context) {
         nsView.onHoverChanged = onHoverChanged
+        nsView.onLocationChanged = onLocationChanged
     }
 }
 
