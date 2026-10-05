@@ -36,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowManager.shared.restoreSize(
             for: model.presentationMode,
             orientation: model.orientation,
+            screenCount: model.screenLayoutCount,
             animated: false
         )
         panel.center()

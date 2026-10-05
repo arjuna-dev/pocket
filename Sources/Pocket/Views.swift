@@ -10,19 +10,8 @@ private extension Color {
 struct AppRootView: View {
     @ObservedObject var model: PocketModel
 
-    private var selectedController: WebViewController {
-        model.controller(for: model.selectedApp)
-    }
-
     var body: some View {
-        Group {
-            switch model.presentationMode {
-            case .device:
-                CompactDeviceView(model: model, controller: selectedController)
-            case .screen:
-                CompactScreenView(model: model, controller: selectedController)
-            }
-        }
+        PocketStageView(model: model)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
         .background(Color.clear)
@@ -32,24 +21,27 @@ struct AppRootView: View {
                 WindowManager.shared.setAlwaysOnTop(model.alwaysOnTop)
                 WindowManager.shared.ensureInitialSize(
                     for: model.presentationMode,
-                    orientation: model.orientation
+                    orientation: model.orientation,
+                    screenCount: model.screenLayoutCount
                 )
             }
             .frame(width: 1, height: 1)
         )
         .onAppear {
-            selectedController.setPresentationMode(model.presentationMode)
+            model.applyPresentationMode()
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: model.orientation,
+                screenCount: model.screenLayoutCount,
                 animated: false
             )
         }
         .onChange(of: model.presentationMode) { _, newMode in
-            selectedController.setPresentationMode(newMode)
+            model.applyPresentationMode()
             WindowManager.shared.restoreSize(
                 for: newMode,
                 orientation: model.orientation,
+                screenCount: model.screenLayoutCount,
                 animated: true
             )
         }
@@ -57,6 +49,15 @@ struct AppRootView: View {
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: newOrientation,
+                screenCount: model.screenLayoutCount,
+                animated: true
+            )
+        }
+        .onChange(of: model.screenLayoutCount) { _, newCount in
+            WindowManager.shared.restoreSize(
+                for: model.presentationMode,
+                orientation: model.orientation,
+                screenCount: newCount,
                 animated: true
             )
         }
@@ -70,62 +71,71 @@ struct AppRootView: View {
     }
 }
 
-struct CompactDeviceView: View {
+struct PocketStageView: View {
     @ObservedObject var model: PocketModel
-    @ObservedObject var controller: WebViewController
     @State private var controlsVisible = false
+    @State private var siteMenuSlot: Int?
+    @State private var layoutMenuOpen = false
 
     var body: some View {
         GeometryReader { proxy in
-            let deviceSize = model.orientation.deviceSize
+            let count = max(model.visibleSlots.count, 1)
+            let multiple = count > 1
             let availableWidth = max(proxy.size.width, 1)
-            let controlsScale = CompactControls.scaleToFit(width: availableWidth)
-            let controlsBayHeight = CompactControls.bayHeight(for: availableWidth)
-            let topControlsBayHeight = CompactLayout.windowControlsBayHeight
-            let availableHeight = max(proxy.size.height - topControlsBayHeight - controlsBayHeight, 1)
-            let scale = max(
-                min(availableWidth / deviceSize.width, availableHeight / deviceSize.height),
-                0.1
-            )
+            let showsChrome = controlsVisible || layoutMenuOpen || siteMenuSlot != nil
+            let reservedBottomHeight = CompactControls.bayHeight(for: availableWidth)
+            let bottomHeight = multiple ? (showsChrome ? reservedBottomHeight : 0) : reservedBottomHeight
+            let windowBarHeight = multiple && showsChrome ? CompactLayout.windowControlsBayHeight : 0
+            let gridHeight = max(proxy.size.height - windowBarHeight - bottomHeight, 1)
+            let grid = gridMetrics(availableWidth: availableWidth, gridHeight: gridHeight, count: count)
 
             VStack(spacing: 0) {
-                ZStack {
-                    if controlsVisible {
-                        CompactWindowControlsBar(controller: controller)
-                            .padding(.horizontal, 8)
+                if multiple && showsChrome {
+                    WindowTrafficLights()
+                        .padding(.leading, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: windowBarHeight)
+                        .background(Color.pocketBackground)
+                        .transition(.opacity)
+                }
+
+                VStack(spacing: grid.gapY) {
+                    ForEach(0..<grid.rows, id: \.self) { row in
+                        HStack(spacing: grid.gapX) {
+                            ForEach(0..<grid.columns, id: \.self) { column in
+                                if let slot = slot(row: row, column: column, count: count) {
+                                    ScreenPane(
+                                        model: model,
+                                        slot: slot,
+                                        showsChrome: multiple || showsChrome,
+                                        showsWindowButtons: !multiple,
+                                        isSiteMenuPresented: siteMenuBinding(for: slot.index)
+                                    )
+                                    .frame(width: grid.paneWidth, height: grid.paneHeight)
+                                } else {
+                                    Color.clear
+                                        .frame(width: grid.paneWidth, height: grid.paneHeight)
+                                }
+                            }
+                        }
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: topControlsBayHeight)
-                .background(controlsVisible ? Color.pocketBackground : Color.clear)
-                .transaction { $0.animation = nil }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 ZStack {
-                    DeviceFrame(
-                        app: model.selectedApp,
-                        controller: controller,
-                        orientation: model.orientation
-                    )
-                    .frame(
-                        width: deviceSize.width * scale,
-                        height: deviceSize.height * scale
-                    )
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                ZStack {
-                    if controlsVisible {
+                    if showsChrome {
                         CompactControls(
                             model: model,
-                            scale: controlsScale
+                            isLayoutMenuPresented: $layoutMenuOpen
                         )
-                            .transition(.opacity)
+                        .transition(.opacity)
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .frame(height: controlsBayHeight)
-                .background(controlsVisible ? Color.pocketBackground : Color.clear)
+                .frame(height: bottomHeight)
+                .background(showsChrome ? Color.pocketBackground : Color.clear)
             }
+            .frame(width: availableWidth, height: proxy.size.height, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
@@ -140,182 +150,312 @@ struct CompactDeviceView: View {
             .accessibilityHidden(true)
         }
     }
+
+    private func siteMenuBinding(for index: Int) -> Binding<Bool> {
+        Binding(
+            get: { siteMenuSlot == index },
+            set: { isPresented in
+                if isPresented {
+                    siteMenuSlot = index
+                    model.focusedSlotIndex = index
+                } else if siteMenuSlot == index {
+                    siteMenuSlot = nil
+                }
+            }
+        )
+    }
+
+    private func gridMetrics(
+        availableWidth: CGFloat,
+        gridHeight: CGFloat,
+        count: Int
+    ) -> (columns: Int, rows: Int, paneWidth: CGFloat, paneHeight: CGFloat, gapX: CGFloat, gapY: CGFloat) {
+        let columns = count <= 2 ? 1 : 2
+        let rows = count == 1 ? 1 : 2
+        let gapX: CGFloat = columns > 1 ? CompactLayout.paneGap : 0
+        let gapY: CGFloat = rows > 1 ? CompactLayout.paneGap : 0
+        let paneWidth = max((availableWidth - gapX * CGFloat(columns - 1)) / CGFloat(columns), 1)
+        let paneHeight = max((gridHeight - gapY * CGFloat(rows - 1)) / CGFloat(rows), 1)
+        return (columns, rows, paneWidth, paneHeight, gapX, gapY)
+    }
+
+    private func slot(row: Int, column: Int, count: Int) -> ScreenSlot? {
+        let index = column == 0 ? row : 2 + row
+        guard index < count else { return nil }
+        return model.slots.first { $0.index == index }
+    }
 }
 
-struct CompactScreenView: View {
+private struct ScreenPane: View {
     @ObservedObject var model: PocketModel
-    @ObservedObject var controller: WebViewController
-    @State private var controlsVisible = false
+    @ObservedObject var slot: ScreenSlot
+    let showsChrome: Bool
+    var showsWindowButtons: Bool
+    @Binding var isSiteMenuPresented: Bool
 
     var body: some View {
-        GeometryReader { proxy in
-            let screenSize = model.orientation.screenSize
-            let dragBarBaseHeight = model.presentationMode.screenDragBarHeight
-            let availableWidth = max(proxy.size.width, 1)
-            let controlsScale = CompactControls.scaleToFit(width: availableWidth)
-            let controlsBayHeight = CompactControls.bayHeight(for: availableWidth)
-            let topControlsBayHeight = CompactLayout.windowControlsBayHeight
-            let availableHeight = max(proxy.size.height - topControlsBayHeight - controlsBayHeight, 1)
-            let widthScale = availableWidth / screenSize.width
-            let dragBarHeight = min(dragBarBaseHeight * widthScale, max(availableHeight - 1, 0))
-            let screenHeight = max(availableHeight - dragBarHeight, 1)
-
-            VStack(spacing: 0) {
-                ZStack {
-                    if controlsVisible {
-                        CompactWindowControlsBar(controller: controller)
-                            .padding(.horizontal, 8)
-                    }
+        VStack(spacing: 0) {
+            ZStack {
+                if showsChrome {
+                    ScreenControlsBar(
+                        model: model,
+                        slot: slot,
+                        showsWindowButtons: showsWindowButtons,
+                        isSiteMenuPresented: $isSiteMenuPresented
+                    )
+                    .padding(.horizontal, showsWindowButtons ? 12 : 8)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: topControlsBayHeight)
-                .background(controlsVisible ? Color.pocketBackground : Color.clear)
-                .transaction { $0.animation = nil }
-
-                WindowDragHandle(showsIndicator: controlsVisible)
-                    .frame(width: availableWidth, height: dragBarHeight)
-                    .frame(maxWidth: .infinity)
-                    .help("Drag to move window")
-
-                ZStack {
-                    WebContent(controller: controller, cornerRadius: 0)
-                        .frame(width: availableWidth, height: screenHeight)
-                }
-
-                ZStack {
-                    if controlsVisible {
-                        CompactControls(
-                            model: model,
-                            scale: controlsScale
-                        )
-                            .transition(.opacity)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: controlsBayHeight)
-                .background(controlsVisible ? Color.pocketBackground : Color.clear)
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.clear)
-        .overlay {
-            HoverTrackingView { isHovering in
-                guard controlsVisible != isHovering else { return }
-                withAnimation(.easeOut(duration: 0.16)) {
-                    controlsVisible = isHovering
+            .frame(maxWidth: .infinity)
+            .frame(height: CompactLayout.screenBarHeight)
+            .background(showsChrome ? Color.pocketBackground : Color.clear)
+
+            Group {
+                if model.presentationMode == .device {
+                    deviceContent
+                } else {
+                    WebContent(controller: slot.controller, cornerRadius: 0)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color.black)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityHidden(true)
         }
+        .onHover { hovering in
+            if hovering, model.focusedSlotIndex != slot.index {
+                model.focusedSlotIndex = slot.index
+            }
+        }
+    }
+
+    private var deviceContent: some View {
+        GeometryReader { proxy in
+            let deviceSize = model.orientation.deviceSize
+            let scale = max(
+                min(
+                    proxy.size.width / deviceSize.width,
+                    proxy.size.height / deviceSize.height
+                ),
+                0.1
+            )
+
+            DeviceFrame(
+                app: slot.app,
+                controller: slot.controller,
+                orientation: model.orientation
+            )
+            .frame(width: deviceSize.width * scale, height: deviceSize.height * scale)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct WindowTrafficLights: View {
+    @State private var areButtonIconsVisible = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            WindowActionButton(
+                symbol: "xmark",
+                color: Color(red: 1.0, green: 0.36, blue: 0.34),
+                help: "Close Pocket",
+                showsIcon: areButtonIconsVisible,
+                action: WindowManager.shared.closeWindow
+            )
+
+            WindowActionButton(
+                symbol: "minus",
+                color: Color(red: 1.0, green: 0.75, blue: 0.25),
+                help: "Minimize Pocket",
+                showsIcon: areButtonIconsVisible,
+                action: WindowManager.shared.minimizeWindow
+            )
+
+            WindowActionButton(
+                symbol: "arrow.up.left.and.arrow.down.right",
+                color: Color(red: 0.34, green: 0.82, blue: 0.45),
+                help: "Zoom Pocket",
+                showsIcon: areButtonIconsVisible,
+                action: WindowManager.shared.zoomWindow
+            )
+        }
+        .onHover { areButtonIconsVisible = $0 }
     }
 }
 
 struct CompactControls: View {
     @ObservedObject var model: PocketModel
-    let scale: CGFloat
+    @Binding var isLayoutMenuPresented: Bool
+    @State private var isOrientationHovering = false
 
-    private static let idealWidth = CompactLayout.controlsIdealWidth
-
-    static func scaleToFit(width: CGFloat) -> CGFloat {
-        CompactLayout.controlsScale(for: width)
-    }
+    private static let orientationHoverText = "Cmd + 1 - Mobile, Cmd + 2 - Landscape"
 
     static func bayHeight(for width: CGFloat) -> CGFloat {
         CompactLayout.controlsBayHeight(for: width)
     }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Menu {
-                ForEach(model.enabledApps) { app in
-                    Button {
-                        model.select(app)
-                    } label: {
-                        HStack(spacing: 7) {
-                            ServiceIcon(app: app, size: 16)
-                            Text(app.title)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 7) {
-                    ServiceIcon(app: model.selectedApp, size: 16)
-
-                    Text(model.selectedApp.title)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 112, alignment: .leading)
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .help("Switch app")
-
-            CompactOrientationSwitcher(selection: $model.orientation)
-
-            CompactAlwaysOnTopButton(model: model)
-            CompactWebsiteManagerButton(model: model)
+        ViewThatFits(in: .horizontal) {
+            controlsBar(showsTitles: true)
+            controlsBar(showsTitles: false)
         }
-        .padding(6)
-        .background(Capsule().fill(Color.pocketBackground))
-        .clipShape(Capsule())
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private func controlsBar(showsTitles: Bool) -> some View {
+        HStack(spacing: showsTitles ? 10 : 6) {
+            CompactChromeButton(
+                symbol: model.orientation == .portrait ? "iphone" : "iphone.landscape",
+                title: model.orientation == .portrait ? "Mobile" : "Landscape",
+                showsTitle: showsTitles,
+                showsHoverTitle: false
+            ) {
+                model.orientation = model.orientation == .portrait ? .landscape : .portrait
+            }
+            .onHover { isOrientationHovering = $0 }
+
+            CompactLayoutMenu(
+                model: model,
+                showsTitle: showsTitles,
+                isPresented: $isLayoutMenuPresented
+            )
+
+            CompactChromeButton(
+                symbol: model.alwaysOnTop ? "pin.fill" : "pin",
+                title: "Pin",
+                showsTitle: showsTitles
+            ) {
+                model.alwaysOnTop.toggle()
+            }
+
+            CompactChromeButton(
+                symbol: "slider.horizontal.3",
+                title: "Manage sites",
+                showsTitle: showsTitles
+            ) {
+                model.isWebsiteManagerPresented = true
+            }
+        }
+        .padding(.horizontal, showsTitles ? 12 : 10)
+        .padding(.vertical, 8)
+        .background {
+            Capsule()
+                .fill(Color(red: 0.145, green: 0.155, blue: 0.175))
+        }
         .overlay {
             Capsule()
-                .stroke(Color.white.opacity(0.13), lineWidth: 1)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.35), radius: 14, y: 7)
-        .frame(width: Self.idealWidth, height: 40)
-        .scaleEffect(scale)
-        .frame(
-            width: Self.idealWidth * scale,
-            height: 40 * scale
+        .overlay(alignment: .top) {
+            if isOrientationHovering {
+                Text(Self.orientationHoverText)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background {
+                        Capsule()
+                            .fill(Color(white: 0.22))
+                    }
+                    .fixedSize()
+                    .offset(y: -32)
+                    .allowsHitTesting(false)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+struct CompactSiteSwitcher: View {
+    @ObservedObject var model: PocketModel
+    @ObservedObject var slot: ScreenSlot
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ServiceIcon(app: slot.app, size: 16)
+                .layoutPriority(1)
+
+            Text(slot.app.title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(-1)
+
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Color.white.opacity(0.72))
+                .layoutPriority(1)
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+        .background {
+            Capsule()
+                .fill(Color.white.opacity(0.06))
+        }
+        .overlay {
+            Capsule()
+                .stroke(Color.white.opacity(0.16), lineWidth: 1)
+        }
+        .contentShape(Capsule())
+        .onTapGesture {
+            isPresented = true
+        }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Switch app")
+        .popover(isPresented: $isPresented, arrowEdge: .top) {
+            CompactSiteMenu(model: model, slot: slot, isPresented: $isPresented)
+                .presentationBackground {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(red: 0.145, green: 0.155, blue: 0.175))
+                }
+        }
+        .help("Switch app")
+    }
+}
+
+private struct ScreenControlsBar: View {
+    @ObservedObject var model: PocketModel
+    @ObservedObject var slot: ScreenSlot
+    var showsWindowButtons: Bool
+    @Binding var isSiteMenuPresented: Bool
+
+    var body: some View {
+        ScreenNavigationControls(
+            model: model,
+            slot: slot,
+            controller: slot.controller,
+            showsWindowButtons: showsWindowButtons,
+            isSiteMenuPresented: $isSiteMenuPresented
         )
     }
 }
 
-struct CompactWindowControlsBar: View {
-    @State private var areButtonIconsVisible = false
+private struct ScreenNavigationControls: View {
+    @ObservedObject var model: PocketModel
+    @ObservedObject var slot: ScreenSlot
     @ObservedObject var controller: WebViewController
+    var showsWindowButtons: Bool
+    @Binding var isSiteMenuPresented: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 2) {
-                WindowActionButton(
-                    symbol: "xmark",
-                    color: Color(red: 1.0, green: 0.36, blue: 0.34),
-                    help: "Close Pocket",
-                    showsIcon: areButtonIconsVisible,
-                    action: WindowManager.shared.closeWindow
-                )
-
-                WindowActionButton(
-                    symbol: "minus",
-                    color: Color(red: 1.0, green: 0.75, blue: 0.25),
-                    help: "Minimize Pocket",
-                    showsIcon: areButtonIconsVisible,
-                    action: WindowManager.shared.minimizeWindow
-                )
-
-                WindowActionButton(
-                    symbol: "arrow.up.left.and.arrow.down.right",
-                    color: Color(red: 0.34, green: 0.82, blue: 0.45),
-                    help: "Zoom Pocket",
-                    showsIcon: areButtonIconsVisible,
-                    action: WindowManager.shared.zoomWindow
-                )
+        HStack(spacing: 10) {
+            if showsWindowButtons {
+                WindowTrafficLights()
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
             }
-            .onHover { areButtonIconsVisible = $0 }
 
-            Spacer(minLength: 0)
-
-            HStack(spacing: 3) {
+            HStack(spacing: 8) {
                 CompactControlButton(
                     symbol: "chevron.left",
                     help: "Back",
                     disabled: !controller.canGoBack
                 ) {
+                    model.focusedSlotIndex = slot.index
                     controller.goBack()
                 }
 
@@ -324,24 +464,27 @@ struct CompactWindowControlsBar: View {
                     help: "Forward",
                     disabled: !controller.canGoForward
                 ) {
+                    model.focusedSlotIndex = slot.index
                     controller.goForward()
                 }
 
                 CompactControlButton(symbol: "arrow.clockwise", help: "Reload") {
-                    controller.load()
+                    model.focusedSlotIndex = slot.index
+                    controller.reloadPage()
                 }
             }
-            .padding(6)
-            .background(Capsule().fill(Color.pocketBackground))
-            .clipShape(Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(Color.white.opacity(0.13), lineWidth: 1)
-            }
-            .shadow(color: Color.black.opacity(0.35), radius: 14, y: 7)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            CompactSiteSwitcher(model: model, slot: slot, isPresented: $isSiteMenuPresented)
+                .layoutPriority(1)
+                .frame(minWidth: 0, alignment: .trailing)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: CompactLayout.windowControlsBayHeight)
+        .clipped()
     }
 }
 
@@ -373,32 +516,6 @@ private struct WindowActionButton: View {
     }
 }
 
-struct CompactWebsiteManagerButton: View {
-    @ObservedObject var model: PocketModel
-
-    var body: some View {
-        Button {
-            model.isWebsiteManagerPresented = true
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "slider.horizontal.3")
-                Text("Manage sites")
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.78))
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(Color.white.opacity(0.06))
-                .clipShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .help("Manage websites")
-        .accessibilityLabel("Manage sites")
-    }
-}
-
 struct CompactControlButton: View {
     let symbol: String
     let help: String
@@ -408,55 +525,286 @@ struct CompactControlButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(disabled ? Color.white.opacity(0.68) : Color.white)
-                .frame(width: 28, height: 28)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(disabled ? Color.white.opacity(0.78) : Color.white)
+                .frame(width: 22, height: 22)
         }
         .buttonStyle(.plain)
-        .disabled(disabled)
+        .allowsHitTesting(!disabled)
         .help(help)
     }
 }
 
-struct CompactOrientationSwitcher: View {
-    @Binding var selection: DeviceOrientation
+private struct CompactChromeButton: View {
+    let symbol: String
+    let title: String
+    var showsTitle: Bool
+    var showsHoverTitle = true
+    let action: () -> Void
 
     var body: some View {
-        Button {
-            selection = selection == .portrait ? .landscape : .portrait
-        } label: {
-            Image(systemName: selection.toggleSymbolName)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(Color.white.opacity(0.82))
-                .frame(width: 28, height: 28)
+        Button(action: action) {
+            CompactChromeLabel(symbol: symbol, title: title, showsTitle: showsTitle)
         }
         .buttonStyle(.plain)
-        .help("Switch to \(selection == .portrait ? "Landscape" : "Portrait")")
-        .accessibilityLabel("Orientation")
-        .accessibilityValue(selection.title)
+        .modifier(
+            CompactHoverTitleModifier(
+                title: title,
+                showsTitle: showsTitle,
+                showsHoverTitle: showsHoverTitle
+            )
+        )
+        .accessibilityLabel(title)
     }
 }
 
-struct CompactAlwaysOnTopButton: View {
+private struct CompactChromeLabel: View {
+    let symbol: String
+    let title: String
+    var showsTitle: Bool
+    var showsChevron = false
+    var chevronPointsUp = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 16, height: 16)
+
+            if showsTitle {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                if showsChevron {
+                    Image(systemName: chevronPointsUp ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                }
+            }
+        }
+        .foregroundStyle(Color.white.opacity(0.88))
+        .padding(.horizontal, showsTitle ? 2 : 4)
+        .frame(height: 24)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct CompactHoverTitleModifier: ViewModifier {
+    let title: String
+    let showsTitle: Bool
+    var showsHoverTitle = true
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { isHovering = $0 }
+            .overlay(alignment: .top) {
+                if isHovering && showsHoverTitle && !showsTitle {
+                    Text(title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background {
+                            Capsule()
+                                .fill(Color(white: 0.22))
+                        }
+                        .fixedSize()
+                        .offset(y: -30)
+                        .allowsHitTesting(false)
+                }
+            }
+            .zIndex(isHovering && showsHoverTitle && !showsTitle ? 1 : 0)
+            .modifier(CompactHelpModifier(title: showsHoverTitle ? title : nil))
+    }
+}
+
+private struct CompactHelpModifier: ViewModifier {
+    let title: String?
+
+    func body(content: Content) -> some View {
+        if let title {
+            content.help(title)
+        } else {
+            content
+        }
+    }
+}
+
+private struct CompactLayoutMenu: View {
     @ObservedObject var model: PocketModel
+    var showsTitle: Bool
+    @Binding var isPresented: Bool
 
     var body: some View {
         Button {
-            model.alwaysOnTop.toggle()
+            isPresented = true
         } label: {
-            Image(systemName: model.alwaysOnTop ? "pin.fill" : "pin")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(model.alwaysOnTop ? Color.white : Color.white.opacity(0.82))
-                .frame(width: 28, height: 28)
-                .background {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(model.alwaysOnTop ? Color.white.opacity(0.13) : Color.clear)
+            CompactChromeLabel(
+                symbol: "square.grid.2x2",
+                title: "Layout",
+                showsTitle: showsTitle,
+                showsChevron: true,
+                chevronPointsUp: isPresented
+            )
+            .padding(.horizontal, isPresented ? 8 : 0)
+            .padding(.vertical, isPresented ? 3 : 0)
+            .background {
+                if isPresented {
+                    Capsule()
+                        .fill(Color.white.opacity(0.08))
+                        .overlay {
+                            Capsule()
+                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        }
                 }
+            }
         }
         .buttonStyle(.plain)
-        .help(model.alwaysOnTop ? "Always on Top: On" : "Always on Top: Off")
-        .accessibilityLabel("Always on Top")
-        .accessibilityValue(model.alwaysOnTop ? "On" : "Off")
+        .modifier(CompactHoverTitleModifier(title: "Layout", showsTitle: showsTitle))
+        .accessibilityLabel("Layout")
+        .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+            CompactScreenLayoutMenu(model: model, isPresented: $isPresented)
+                .presentationBackground {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(red: 0.145, green: 0.155, blue: 0.175))
+                }
+        }
+    }
+}
+
+private struct CompactScreenLayoutMenu: View {
+    @ObservedObject var model: PocketModel
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("SCREENS")
+                .font(.system(size: 11, weight: .semibold))
+                .tracking(1.5)
+                .foregroundStyle(Color.white.opacity(0.42))
+                .padding(.horizontal, 14)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
+
+            ForEach(1...4, id: \.self) { count in
+                CompactScreenLayoutRow(
+                    count: count,
+                    isSelected: model.screenLayoutCount == count
+                ) {
+                    model.screenLayoutCount = count
+                    isPresented = false
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .frame(width: 210)
+    }
+}
+
+private struct ScreenLayoutIcon: View {
+    let count: Int
+
+    var body: some View {
+        VStack(spacing: 1.5) {
+            HStack(spacing: 1.5) {
+                cell(count >= 1)
+                cell(count >= 3)
+            }
+            HStack(spacing: 1.5) {
+                cell(count >= 2)
+                cell(count >= 4)
+            }
+        }
+    }
+
+    private func cell(_ highlighted: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 1.2, style: .continuous)
+            .fill(Color.white.opacity(highlighted ? 0.92 : 0.22))
+            .frame(width: 6, height: 6)
+    }
+}
+
+private struct CompactScreenLayoutRow: View {
+    let count: Int
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovering = false
+
+    private var title: String {
+        count == 1 ? "1 screen" : "\(count) screens"
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                ScreenLayoutIcon(count: count)
+                    .frame(width: 18, height: 18)
+
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+
+                Spacer(minLength: 12)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.45, green: 0.84, blue: 0.52))
+                }
+            }
+            .foregroundStyle(Color.white.opacity(0.92))
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isHovering ? Color.white.opacity(0.06) : Color.clear)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6)
+        .onHover { isHovering = $0 }
+    }
+}
+
+private struct CompactSiteMenu: View {
+    @ObservedObject var model: PocketModel
+    @ObservedObject var slot: ScreenSlot
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(model.enabledApps) { app in
+                Button {
+                    model.select(app, in: slot)
+                    isPresented = false
+                } label: {
+                    HStack(spacing: 10) {
+                        ServiceIcon(app: app, size: 16)
+
+                        Text(app.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+
+                        Spacer(minLength: 12)
+
+                        if app.id == slot.app.id {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.45, green: 0.84, blue: 0.52))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 8)
+        .frame(width: 180)
     }
 }
 
@@ -485,6 +833,7 @@ struct WebsiteManagerSheet: View {
     @ObservedObject var model: PocketModel
     @Environment(\.dismiss) private var dismiss
     @State private var editorTarget: WebsiteEditorTarget?
+    @State private var websitePendingRemoval: SimulatedApp?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -501,10 +850,13 @@ struct WebsiteManagerSheet: View {
 
                 Spacer()
 
-                Button("Done") {
-                    dismiss()
+                Button {
+                    editorTarget = .new
+                } label: {
+                    Label("Add Website", systemImage: "plus")
                 }
-                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
             }
             .padding(.bottom, 18)
 
@@ -513,34 +865,23 @@ struct WebsiteManagerSheet: View {
                     ForEach(model.websites) { website in
                         WebsiteManagerRow(
                             website: website,
-                            isSelected: model.selectedApp.id == website.id,
+                            isOpen: model.openAppIDs.contains(website.id),
                             onToggle: { model.setEnabled($0, for: website) },
                             onEdit: { editorTarget = .edit(website) },
-                            onRemove: { model.removeWebsite(website) }
+                            onRemove: { websitePendingRemoval = website }
                         )
                     }
                 }
             }
             .scrollIndicators(.visible)
 
-            HStack(spacing: 12) {
-                Image(systemName: "info.circle")
-                    .foregroundStyle(Color.pocketMuted)
+            HStack {
+                Spacer()
 
-                Text("Disabled websites stay saved but disappear from Pocket's app switcher.")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.pocketMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 12)
-
-                Button {
-                    editorTarget = .new
-                } label: {
-                    Label("Add Website", systemImage: "plus")
+                Button("Done") {
+                    dismiss()
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
+                .keyboardShortcut(.cancelAction)
             }
             .padding(.top, 18)
         }
@@ -551,12 +892,57 @@ struct WebsiteManagerSheet: View {
         .sheet(item: $editorTarget) { target in
             WebsiteEditorSheet(model: model, website: target.website)
         }
+        .alert(
+            removeAlertTitle,
+            isPresented: removeAlertPresented
+        ) {
+            if model.websites.count > 1 {
+                Button("Delete", role: .destructive) {
+                    if let websitePendingRemoval {
+                        model.removeWebsite(websitePendingRemoval)
+                    }
+                    websitePendingRemoval = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    websitePendingRemoval = nil
+                }
+            } else {
+                Button("OK", role: .cancel) {
+                    websitePendingRemoval = nil
+                }
+            }
+        } message: {
+            Text(removeAlertMessage)
+        }
+    }
+
+    private var removeAlertPresented: Binding<Bool> {
+        Binding(
+            get: { websitePendingRemoval != nil },
+            set: { if !$0 { websitePendingRemoval = nil } }
+        )
+    }
+
+    private var removeAlertTitle: String {
+        guard let websitePendingRemoval else { return "Remove website?" }
+        if model.websites.count == 1 {
+            return "Can’t remove \(websitePendingRemoval.title)"
+        }
+        return "Remove \(websitePendingRemoval.title)?"
+    }
+
+    private var removeAlertMessage: String {
+        guard let websitePendingRemoval else { return "" }
+        if model.websites.count == 1 {
+            return "Pocket needs at least one website."
+        }
+        return "\(websitePendingRemoval.title) will be removed from Pocket."
     }
 }
 
 struct WebsiteManagerRow: View {
     let website: SimulatedApp
-    let isSelected: Bool
+    let isOpen: Bool
     let onToggle: (Bool) -> Void
     let onEdit: () -> Void
     let onRemove: () -> Void
@@ -575,7 +961,7 @@ struct WebsiteManagerRow: View {
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
                         .foregroundStyle(website.isEnabled ? .white : Color.white.opacity(0.48))
 
-                    if isSelected {
+                    if isOpen {
                         Text("OPEN")
                             .font(.system(size: 8, weight: .bold, design: .rounded))
                             .tracking(0.6)
@@ -607,15 +993,13 @@ struct WebsiteManagerRow: View {
             .buttonStyle(.borderless)
             .help("Edit website")
 
-            if website.isCustom {
-                Button(role: .destructive, action: onRemove) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.borderless)
-                .help("Remove website")
+            Button(role: .destructive, action: onRemove) {
+                Image(systemName: "trash")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 28, height: 28)
             }
+            .buttonStyle(.borderless)
+            .help("Remove website")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -637,39 +1021,14 @@ struct WebsiteEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var title: String
-    @State private var subtitle: String
     @State private var urlString: String
-    @State private var symbolName: String
     @State private var validationMessage: String?
-
-    private static let iconOptions = [
-        "globe", "globe.americas.fill", "globe.europe.africa.fill", "globe.asia.australia.fill",
-        "link", "safari", "network", "rectangle.on.rectangle", "macwindow", "server.rack",
-        "wifi", "antenna.radiowaves.left.and.right", "cloud.fill", "lock.fill", "key.fill",
-        "shield.fill", "gearshape.fill", "wrench.and.screwdriver.fill", "slider.horizontal.3",
-        "message.fill", "bubble.left.and.bubble.right.fill", "paperplane.fill", "phone.fill",
-        "video.fill", "envelope.fill", "megaphone.fill", "bell.fill", "person.crop.circle.fill",
-        "person.2.fill", "person.3.fill", "radio.fill", "mic.fill", "video.camera.fill",
-        "play.rectangle.fill", "play.fill", "music.note", "music.mic", "headphones", "film.fill",
-        "tv.fill", "gamecontroller.fill", "camera.fill", "photo.fill", "doc.text.image.fill",
-        "cart.fill", "bag.fill", "creditcard.fill", "banknote.fill", "gift.fill", "book.fill",
-        "newspaper.fill", "bookmark.fill", "note.text", "folder.fill", "tray.full.fill",
-        "checklist", "list.bullet.rectangle.portrait.fill", "pencil.and.outline", "calendar",
-        "clock.fill", "map.fill", "mappin.and.ellipse", "house.fill", "building.2.fill", "car.fill",
-        "airplane", "fork.knife", "cup.and.saucer.fill", "bolt.fill", "flame.fill", "leaf.fill",
-        "sun.max.fill", "moon.fill", "heart.fill", "star.fill", "flag.fill", "checkmark.seal.fill",
-        "briefcase.fill", "terminal.fill", "chevron.left.forwardslash.chevron.right", "cpu.fill",
-        "brain.head.profile", "chart.bar.fill", "chart.pie.fill", "face.smiling.fill",
-        "hand.thumbsup.fill", "quote.bubble.fill", "rosette", "ellipsis.circle.fill"
-    ]
 
     init(model: PocketModel, website: SimulatedApp?) {
         self.model = model
         self.website = website
         _title = State(initialValue: website?.title ?? "")
-        _subtitle = State(initialValue: website?.subtitle ?? "Website")
         _urlString = State(initialValue: website?.urlString ?? "https://")
-        _symbolName = State(initialValue: website?.symbolName ?? "globe")
         _validationMessage = State(initialValue: nil)
     }
 
@@ -677,13 +1036,12 @@ struct WebsiteEditorSheet: View {
         VStack(alignment: .leading, spacing: 18) {
             header
             websiteFields
-            iconPicker
             validationNotice
             Spacer(minLength: 0)
             footer
         }
         .padding(24)
-        .frame(width: 480, height: 540)
+        .frame(width: 480, height: 280)
         .background(Color.pocketBackground)
         .preferredColorScheme(.dark)
     }
@@ -695,7 +1053,7 @@ struct WebsiteEditorSheet: View {
                     .font(.system(size: 20, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
-                Text("Give the site a name, URL, and icon for Pocket.")
+                Text("Give the site a name and URL for Pocket.")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(Color.pocketMuted)
             }
@@ -716,54 +1074,11 @@ struct WebsiteEditorSheet: View {
             TextField("e.g. Notion", text: $title)
                 .textFieldStyle(.roundedBorder)
 
-            Text("Subtitle")
-                .formLabelStyle()
-            TextField("e.g. Notes", text: $subtitle)
-                .textFieldStyle(.roundedBorder)
-
             Text("Website URL")
                 .formLabelStyle()
             TextField("https://example.com", text: $urlString)
                 .textFieldStyle(.roundedBorder)
         }
-    }
-
-    private var iconPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Icon")
-                .formLabelStyle()
-
-            ScrollView(.vertical) {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 8), spacing: 7) {
-                    ForEach(Self.iconOptions, id: \.self) { icon in
-                        iconButton(for: icon)
-                    }
-                }
-                .padding(2)
-            }
-            .scrollIndicators(.visible)
-            .frame(height: 156)
-        }
-    }
-
-    private func iconButton(for icon: String) -> some View {
-        Button {
-            symbolName = icon
-        } label: {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(symbolName == icon ? Color.white : Color.white.opacity(0.68))
-                .frame(maxWidth: .infinity)
-                .frame(height: 32)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(symbolName == icon
-                              ? Color(red: 0.78, green: 0.31, blue: 0.20).opacity(0.75)
-                              : Color.white.opacity(0.06))
-                }
-        }
-        .buttonStyle(.plain)
-        .help(icon)
     }
 
     @ViewBuilder
@@ -807,21 +1122,20 @@ struct WebsiteEditorSheet: View {
             return
         }
 
-        let cleanSubtitle = subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if let website {
             model.updateWebsite(
                 website,
                 title: cleanTitle,
-                subtitle: cleanSubtitle.isEmpty ? "Website" : cleanSubtitle,
+                subtitle: website.subtitle,
                 urlString: cleanURL,
-                symbolName: symbolName
+                symbolName: website.symbolName
             )
         } else {
             model.addWebsite(
                 title: cleanTitle,
-                subtitle: cleanSubtitle.isEmpty ? "Website" : cleanSubtitle,
+                subtitle: "Website",
                 urlString: cleanURL,
-                symbolName: symbolName
+                symbolName: "globe"
             )
         }
         dismiss()
@@ -1005,7 +1319,7 @@ struct WebContent: View {
     private var content: some View {
         ZStack(alignment: .top) {
             WebViewRepresentable(controller: controller)
-                .id(controller.app.id)
+                .id(ObjectIdentifier(controller))
 
             if controller.isLoading {
                 VStack(spacing: 0) {
@@ -1103,21 +1417,28 @@ struct ErrorOverlay: View {
 struct ServiceIcon: View {
     let app: SimulatedApp
     let size: CGFloat
+    @State private var image: NSImage?
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-                .fill(app.tint)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                    .fill(app.tint)
 
-            fallbackSymbol
+                Image(systemName: app.symbolName)
+                    .font(.system(size: size * 0.42, weight: .bold))
+                    .foregroundStyle(app.id == SimulatedApp.x.id ? Color.black.opacity(0.82) : .white)
+            }
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.28, style: .continuous))
-    }
-
-    private var fallbackSymbol: some View {
-        Image(systemName: app.symbolName)
-            .font(.system(size: size * 0.42, weight: .bold))
-            .foregroundStyle(app.id == SimulatedApp.x.id ? Color.black.opacity(0.82) : .white)
+        .task(id: app.urlString) {
+            let data = await FaviconStore.shared.imageData(for: app.url)
+            image = data.flatMap(NSImage.init(data:))
+        }
     }
 }

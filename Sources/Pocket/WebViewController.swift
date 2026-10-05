@@ -24,12 +24,20 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
 
+    var onLocationChange: (() -> Void)?
+
     private var progressObservation: NSKeyValueObservation?
     private var canGoBackObservation: NSKeyValueObservation?
     private var canGoForwardObservation: NSKeyValueObservation?
+    private var urlObservation: NSKeyValueObservation?
     private static let minimumViewportSize = CGSize(width: 480, height: 300)
 
-    init(app: SimulatedApp, websiteDataStore: WKWebsiteDataStore? = nil, loadImmediately: Bool = true) {
+    init(
+        app: SimulatedApp,
+        websiteDataStore: WKWebsiteDataStore? = nil,
+        initialURL: URL? = nil,
+        loadImmediately: Bool = true
+    ) {
         self.app = app
         self.pageTitle = app.title
 
@@ -70,9 +78,14 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         canGoForwardObservation = webView.observe(\.canGoForward, options: [.initial, .new]) { [weak self] _, change in
             self?.canGoForward = change.newValue ?? false
         }
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.onLocationChange?()
+            }
+        }
 
         if loadImmediately {
-            load()
+            load(initialURL ?? app.url)
         }
     }
 
@@ -80,13 +93,26 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         progressObservation?.invalidate()
         canGoBackObservation?.invalidate()
         canGoForwardObservation?.invalidate()
+        urlObservation?.invalidate()
     }
 
     func load() {
+        load(app.url)
+    }
+
+    func load(_ url: URL) {
         errorMessage = nil
         isLoading = true
-        webView.load(URLRequest(url: app.url))
+        webView.load(URLRequest(url: url))
         syncHistoryState()
+    }
+
+    func reloadPage() {
+        if webView.url != nil {
+            webView.reload()
+        } else {
+            load()
+        }
     }
 
     func goBack() {
@@ -117,6 +143,7 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         pageTitle = webView.title?.isEmpty == false ? webView.title! : app.title
         syncHistoryState()
         applyViewportZoom()
+        onLocationChange?()
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

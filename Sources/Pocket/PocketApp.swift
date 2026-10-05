@@ -17,35 +17,32 @@ struct PocketApp: App {
                     Button("Device") {
                         model.presentationMode = .device
                     }
-                    .keyboardShortcut("1", modifiers: [.command])
 
                     Button("Screen") {
                         model.presentationMode = .screen
                     }
-                    .keyboardShortcut("2", modifiers: [.command])
-
                 }
 
                 Section("Orientation") {
-                    Button("Portrait") {
+                    Button("Mobile") {
                         model.orientation = .portrait
                     }
-                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                    .keyboardShortcut("1", modifiers: [.command])
 
                     Button("Landscape") {
                         model.orientation = .landscape
                     }
-                    .keyboardShortcut("l", modifiers: [.command, .shift])
+                    .keyboardShortcut("2", modifiers: [.command])
                 }
 
                 Section("Navigation") {
                     Button("Back") {
-                        model.controller(for: model.selectedApp).goBack()
+                        model.activeSlot?.controller.goBack()
                     }
                     .keyboardShortcut("[", modifiers: [.command])
 
                     Button("Forward") {
-                        model.controller(for: model.selectedApp).goForward()
+                        model.activeSlot?.controller.goForward()
                     }
                     .keyboardShortcut("]", modifiers: [.command])
                 }

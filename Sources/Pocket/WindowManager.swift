@@ -9,6 +9,7 @@ final class WindowManager {
     private var lastContentSize: CGSize?
     private var currentMode: PresentationMode?
     private var currentOrientation: DeviceOrientation?
+    private var currentScreenCount = 1
     private var resizeObserver: NSObjectProtocol?
     private var closeObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
@@ -37,6 +38,7 @@ final class WindowManager {
     func resize(
         for mode: PresentationMode,
         orientation: DeviceOrientation,
+        screenCount: Int = 1,
         scale: CGFloat = 1.0,
         size: CGSize? = nil,
         animated: Bool = true,
@@ -46,9 +48,15 @@ final class WindowManager {
 
         currentMode = mode
         currentOrientation = orientation
-        configureChrome(for: mode, orientation: orientation, window: window)
+        currentScreenCount = max(1, min(screenCount, CompactLayout.slotCount))
+        configureChrome(for: mode, orientation: orientation, screenCount: currentScreenCount, window: window)
 
-        let contentSize = size ?? mode.contentSize(for: orientation, scale: scale)
+        let proposed = size ?? mode.contentSize(
+            for: orientation,
+            screenCount: currentScreenCount,
+            scale: scale
+        )
+        let contentSize = fittedToVisibleScreen(proposed, on: window)
         if !force, let lastContentSize,
            abs(lastContentSize.width - contentSize.width) < 1,
            abs(lastContentSize.height - contentSize.height) < 1 {
@@ -56,9 +64,9 @@ final class WindowManager {
         }
 
         let oldFrame = window.frame
-        window.contentMinSize = mode.contentSize(
-            for: orientation,
-            scale: mode.minimumScale
+        window.contentMinSize = CGSize(
+            width: max(280, contentSize.width * 0.62),
+            height: max(220, contentSize.height * 0.62)
         )
         window.setContentSize(contentSize)
 
@@ -69,20 +77,31 @@ final class WindowManager {
         lastContentSize = contentSize
     }
 
-    func ensureInitialSize(for mode: PresentationMode, orientation: DeviceOrientation) {
+    func ensureInitialSize(
+        for mode: PresentationMode,
+        orientation: DeviceOrientation,
+        screenCount: Int
+    ) {
         guard lastContentSize == nil else { return }
-        restoreSize(for: mode, orientation: orientation, animated: false)
+        restoreSize(
+            for: mode,
+            orientation: orientation,
+            screenCount: screenCount,
+            animated: false
+        )
     }
 
     func restoreSize(
         for mode: PresentationMode,
         orientation: DeviceOrientation,
+        screenCount: Int,
         animated: Bool = true
     ) {
         resize(
             for: mode,
             orientation: orientation,
-            size: savedContentSize(for: mode, orientation: orientation),
+            screenCount: screenCount,
+            size: savedContentSize(for: mode, orientation: orientation, screenCount: screenCount),
             animated: animated,
             force: true
         )
@@ -185,7 +204,10 @@ final class WindowManager {
         let contentSize = window.contentRect(forFrameRect: window.frame).size
         guard contentSize.width > 0, contentSize.height > 0 else { return }
 
-        let baseSize = currentMode.contentSize(for: currentOrientation)
+        let baseSize = currentMode.contentSize(
+            for: currentOrientation,
+            screenCount: currentScreenCount
+        )
         guard baseSize.width > 0 else { return }
         UserDefaults.standard.set(
             contentSize.width / baseSize.width,
@@ -195,11 +217,20 @@ final class WindowManager {
 
     private func savedContentSize(
         for mode: PresentationMode,
-        orientation: DeviceOrientation
+        orientation: DeviceOrientation,
+        screenCount: Int
     ) -> CGSize? {
         let scale = UserDefaults.standard.double(forKey: scaleKey(for: mode))
         guard scale > 0 else { return nil }
-        return mode.contentSize(for: orientation, scale: scale)
+        return mode.contentSize(for: orientation, screenCount: screenCount, scale: scale)
+    }
+
+    private func fittedToVisibleScreen(_ size: CGSize, on window: NSWindow) -> CGSize {
+        guard size.width > 1, size.height > 1 else { return size }
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.insetBy(dx: 20, dy: 20)
+        guard let visible, visible.width > 1, visible.height > 1 else { return size }
+        let fit = min(1, visible.width / size.width, visible.height / size.height)
+        return CGSize(width: floor(size.width * fit), height: floor(size.height * fit))
     }
 
     private func scaleKey(for mode: PresentationMode) -> String {
@@ -209,6 +240,7 @@ final class WindowManager {
     private func configureChrome(
         for mode: PresentationMode,
         orientation: DeviceOrientation,
+        screenCount: Int,
         window: NSWindow
     ) {
         // Style changes can reset AppKit's Space behavior. Reapply the policy
@@ -225,7 +257,10 @@ final class WindowManager {
         window.hasShadow = false
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.contentAspectRatio = mode.contentSize(for: orientation)
+        window.contentAspectRatio = mode.contentSize(
+            for: orientation,
+            screenCount: screenCount
+        )
         setStandardWindowButtonsHidden(true, on: window)
     }
 
