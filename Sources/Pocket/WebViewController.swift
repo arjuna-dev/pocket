@@ -1,6 +1,25 @@
 import Foundation
 import WebKit
 
+enum SafariCompatibleUserAgent {
+    /// WKWebView's default user agent omits the Safari version. Google then reads the
+    /// frozen WebKit token and treats the browser as unsupported.
+    static var current: String {
+        let version = installedSafariVersion
+            ?? "\(ProcessInfo.processInfo.operatingSystemVersion.majorVersion).0"
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(version) Safari/605.1.15"
+    }
+
+    private static var installedSafariVersion: String? {
+        guard let version = Bundle(url: URL(fileURLWithPath: "/Applications/Safari.app"))?
+            .object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String else {
+            return nil
+        }
+        let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 final class ResponsiveWebView: WKWebView {
     var onViewportSizeChanged: (() -> Void)?
 
@@ -57,7 +76,7 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
 
         let webView = ResponsiveWebView(frame: .zero, configuration: configuration)
         webView.allowsBackForwardNavigationGestures = true
-        webView.customUserAgent = app.customUserAgent
+        webView.customUserAgent = app.customUserAgent ?? SafariCompatibleUserAgent.current
         webView.pageZoom = 1.0
         webView.setValue(false, forKey: "drawsBackground")
         self.webView = webView

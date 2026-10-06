@@ -8,6 +8,7 @@ struct SimulatedApp: Identifiable, Hashable, Codable {
     var symbolName: String
     var tintHex: String
     let dataStoreKey: String
+    /// A site-specific user agent. Nil means the web view sends the current Safari user agent.
     let customUserAgent: String?
     let isBuiltIn: Bool
     var isEnabled: Bool

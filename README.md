@@ -21,4 +21,4 @@ Keyboard shortcuts are `Command-1` for Device and `Command-2` for Screen, plus `
 
 Always on Top is enabled by default. While pinned, Pocket stays above other windows and follows you across desktops, including full-screen apps such as Arc. Turn off the pin using the button or the Pocket menu to keep Pocket on its current desktop at the normal window level.
 
-WhatsApp uses a service-specific Chrome-compatible user agent because its web client otherwise rejects an embedded WebKit browser. Its resizing behavior is the same as every other website: responsive above the minimum viewport, with shrinking below it.
+WhatsApp uses a service-specific Chrome-compatible user agent because its web client otherwise rejects an embedded WebKit browser. Every other site sends a current Safari user agent, taken from the installed Safari version, so sites such as Gmail do not treat the embedded WebKit view as an outdated browser. Resizing behavior is the same for every website: responsive above the minimum viewport, with shrinking below it.
