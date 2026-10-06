@@ -6,6 +6,16 @@ import SwiftUI
 final class PocketPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .mouseMoved {
+            WindowManager.shared.updateResizeCursor(with: event, in: self)
+        }
+        if event.type == .leftMouseDown, WindowManager.shared.beginEdgeResize(with: event, in: self) {
+            return
+        }
+        super.sendEvent(event)
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {

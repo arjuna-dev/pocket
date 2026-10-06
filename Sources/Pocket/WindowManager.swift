@@ -71,14 +71,18 @@ final class WindowManager: ObservableObject {
         }
 
         let oldFrame = window.frame
-        window.contentMinSize = CGSize(
-            width: max(280, screenSize.width * 0.62),
-            height: max(220, screenSize.height * 0.62)
-        )
         let contentSize = CGSize(
             width: screenSize.width,
             height: screenSize.height + outerTop + outerBottom
         )
+        let minimum = minimumContentSize(for: mode, orientation: orientation, screenCount: currentScreenCount)
+        // Keep the floor below the current window. When the floor matches the
+        // window exactly, AppKit treats every edge drag as a no-op.
+        window.contentMinSize = CGSize(
+            width: min(minimum.width * 0.7, contentSize.width * 0.7),
+            height: min(minimum.height * 0.7, contentSize.height * 0.7)
+        )
+        window.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         window.setContentSize(contentSize)
 
         var newFrame = window.frame
@@ -246,6 +250,19 @@ final class WindowManager: ObservableObject {
         return mode.contentSize(for: orientation, screenCount: screenCount, scale: scale)
     }
 
+    private func minimumContentSize(
+        for mode: PresentationMode,
+        orientation: DeviceOrientation,
+        screenCount: Int
+    ) -> CGSize {
+        let screen = mode.contentSize(
+            for: orientation,
+            screenCount: screenCount,
+            scale: mode.minimumScale
+        )
+        return CGSize(width: screen.width, height: screen.height + outerTop + outerBottom)
+    }
+
     private func fittedToVisibleScreen(_ size: CGSize, on window: NSWindow) -> CGSize {
         guard size.width > 1, size.height > 1 else { return size }
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame.insetBy(dx: 20, dy: 20)
@@ -279,7 +296,8 @@ final class WindowManager: ObservableObject {
         window.hasShadow = false
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.contentAspectRatio = .zero
+        let page = mode.contentSize(for: orientation, screenCount: screenCount)
+        window.contentAspectRatio = NSSize(width: page.width, height: page.height + outerTop + outerBottom)
         setStandardWindowButtonsHidden(true, on: window)
     }
 
@@ -319,40 +337,138 @@ final class WindowManager: ObservableObject {
         return frame
     }
 
-    func frameSizePreservingScreenAspect(_ frameSize: NSSize, window: NSWindow) -> NSSize {
-        guard let currentMode, let currentOrientation else { return frameSize }
+    func resizedFrame(start: NSRect, proposed: NSRect, edges: Set<NSRectEdge>, window: NSWindow) -> NSRect {
+        guard let currentMode, let currentOrientation else { return proposed }
         let base = currentMode.contentSize(
             for: currentOrientation,
             screenCount: currentScreenCount
         )
-        guard base.width > 1, base.height > 1 else { return frameSize }
+        guard base.width > 1, base.height > 1 else { return proposed }
         let aspect = base.width / base.height
+        let minimum = currentMode.contentSize(
+            for: currentOrientation,
+            screenCount: currentScreenCount,
+            scale: currentMode.minimumScale
+        )
 
-        let proposedContent = window.contentRect(
-            forFrameRect: NSRect(origin: .zero, size: frameSize)
-        ).size
-        let currentContent = window.contentRect(forFrameRect: window.frame).size
-        let widthDelta = abs(proposedContent.width - currentContent.width)
-        let heightDelta = abs(proposedContent.height - currentContent.height)
-        let screenWidth = max(proposedContent.width, 1)
-        let screenHeight = max(proposedContent.height - outerTop - outerBottom, 1)
-
-        var content = proposedContent
-        if widthDelta >= heightDelta {
-            content.width = screenWidth
-            content.height = screenWidth / aspect + outerTop + outerBottom
+        let horizontal = edges.contains(.minX) || edges.contains(.maxX)
+        let vertical = edges.contains(.minY) || edges.contains(.maxY)
+        var screenWidth = max(proposed.width, 1)
+        var screenHeight = max(proposed.height - outerTop - outerBottom, 1)
+        if horizontal && !vertical {
+            screenHeight = screenWidth / aspect
+        } else if vertical && !horizontal {
+            screenWidth = screenHeight * aspect
+        } else if abs(screenWidth / base.width - 1) >= abs(screenHeight / base.height - 1) {
+            screenHeight = screenWidth / aspect
         } else {
-            content.height = screenHeight + outerTop + outerBottom
-            content.width = screenHeight * aspect
+            screenWidth = screenHeight * aspect
+        }
+        let floorWidth = minimum.width * 0.7
+        if screenWidth < floorWidth {
+            screenWidth = floorWidth
+            screenHeight = screenWidth / aspect
         }
 
-        let minWidth = max(280, base.width * 0.62)
-        if content.width < minWidth {
-            content.width = minWidth
-            content.height = minWidth / aspect + outerTop + outerBottom
+        let size = NSSize(width: screenWidth, height: screenHeight + outerTop + outerBottom)
+        var frame = NSRect(origin: start.origin, size: size)
+        if edges.contains(.minX) {
+            frame.origin.x = start.maxX - size.width
         }
+        if edges.contains(.minY) {
+            frame.origin.y = start.maxY - size.height
+        }
+        if !horizontal {
+            frame.origin.x = start.midX - size.width / 2
+        }
+        if !vertical {
+            frame.origin.y = start.midY - size.height / 2
+        }
+        return frame
+    }
 
-        return window.frameRect(forContentRect: NSRect(origin: .zero, size: content)).size
+    @discardableResult
+    func beginEdgeResize(with event: NSEvent, in window: NSWindow) -> Bool {
+        guard event.type == .leftMouseDown, let contentView = window.contentView else { return false }
+        let point = contentView.convert(event.locationInWindow, from: nil)
+        let edges = resizeEdges(at: point, in: contentView.bounds)
+        guard !edges.isEmpty else { return false }
+
+        let startFrame = window.frame
+        let startMouse = screenLocation(of: event, in: window)
+        while true {
+            guard let next = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) else { break }
+            let proposed = proposedFrame(
+                start: startFrame,
+                startMouse: startMouse,
+                mouse: screenLocation(of: next, in: window),
+                edges: edges
+            )
+            window.setFrame(
+                resizedFrame(start: startFrame, proposed: proposed, edges: edges, window: window),
+                display: true
+            )
+            if next.type == .leftMouseUp { break }
+        }
+        rememberCurrentWindowSize()
+        return true
+    }
+
+    func updateResizeCursor(with event: NSEvent, in window: NSWindow) {
+        guard let contentView = window.contentView else { return }
+        let point = contentView.convert(event.locationInWindow, from: nil)
+        let edges = resizeEdges(at: point, in: contentView.bounds)
+        guard !edges.isEmpty else { return }
+        let horizontal = edges.contains(.minX) || edges.contains(.maxX)
+        let vertical = edges.contains(.minY) || edges.contains(.maxY)
+        if horizontal && vertical {
+            NSCursor.crosshair.set()
+        } else if horizontal {
+            NSCursor.resizeLeftRight.set()
+        } else {
+            NSCursor.resizeUpDown.set()
+        }
+    }
+
+    private func resizeEdges(at point: NSPoint, in bounds: NSRect) -> Set<NSRectEdge> {
+        let margin: CGFloat = 12
+        guard bounds.width > margin * 2, bounds.height > margin * 2 else { return [] }
+        var edges: Set<NSRectEdge> = []
+        if point.x <= bounds.minX + margin { edges.insert(.minX) }
+        if point.x >= bounds.maxX - margin { edges.insert(.maxX) }
+        if point.y <= bounds.minY + margin { edges.insert(.minY) }
+        if point.y >= bounds.maxY - margin { edges.insert(.maxY) }
+        return edges
+    }
+
+    private func screenLocation(of event: NSEvent, in window: NSWindow) -> NSPoint {
+        window.convertToScreen(NSRect(origin: event.locationInWindow, size: .zero)).origin
+    }
+
+    private func proposedFrame(
+        start: NSRect,
+        startMouse: NSPoint,
+        mouse: NSPoint,
+        edges: Set<NSRectEdge>
+    ) -> NSRect {
+        var frame = start
+        let dx = mouse.x - startMouse.x
+        let dy = mouse.y - startMouse.y
+        if edges.contains(.maxX) {
+            frame.size.width = start.width + dx
+        }
+        if edges.contains(.minX) {
+            frame.size.width = start.width - dx
+            frame.origin.x = start.maxX - frame.size.width
+        }
+        if edges.contains(.maxY) {
+            frame.size.height = start.height + dy
+        }
+        if edges.contains(.minY) {
+            frame.size.height = start.height - dy
+            frame.origin.y = start.maxY - frame.size.height
+        }
+        return frame
     }
 
     func standardFrame(for window: NSWindow, defaultFrame: NSRect) -> NSRect {
@@ -397,11 +513,14 @@ final class PocketChromeContainer: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
+        // Track the window with the autoresizing mask. The hosts are positioned
+        // in layout(), so they must not translate an empty mask into fixed
+        // width and height constraints. Those constraints were rejecting drags.
+        autoresizingMask = [.width, .height]
         autoresizesSubviews = false
 
         for host in [screenHost, topHost, bottomHost] {
-            host.translatesAutoresizingMaskIntoConstraints = true
-            host.autoresizingMask = []
+            host.translatesAutoresizingMaskIntoConstraints = false
             host.wantsLayer = true
         }
         screenHost.clipsToBounds = true
@@ -412,6 +531,11 @@ final class PocketChromeContainer: NSView {
 
     required init?(coder: NSCoder) {
         fatalError("PocketChromeContainer is created in code")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        autoresizingMask = [.width, .height]
     }
 
     override func layout() {
@@ -438,7 +562,10 @@ private final class ChromeResizeDelegate: NSObject, NSWindowDelegate {
     weak var manager: WindowManager?
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        manager?.frameSizePreservingScreenAspect(frameSize, window: sender) ?? frameSize
+        // Edge drags are handled by PocketChromeContainer so the fixed bars can
+        // stay put. Returning the proposed size here lets AppKit finish a resize
+        // instead of cancelling it when the other side would also have to move.
+        frameSize
     }
 
     func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
