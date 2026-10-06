@@ -19,6 +19,8 @@ struct BrowserImportTests {
 
     static func run() throws {
         try testButtonTitle()
+        try testWebsitesButtonTitle()
+        try testArcSpaceLabels()
         try testHostMatching()
         try testDecryption()
         try testCookieQuery()
@@ -43,6 +45,90 @@ struct BrowserImportTests {
             BrowserSessionImporter.buttonTitle(for: nil) == "Import from your current browser",
             "An unknown default browser uses the current-browser label"
         )
+    }
+
+    static func testWebsitesButtonTitle() throws {
+        try expect(
+            BrowserSessionImporter.websitesButtonTitle(for: .chrome) == "Import sessions for the websites above from Chrome",
+            "Chrome names itself on the websites import button"
+        )
+        try expect(
+            BrowserSessionImporter.websitesButtonTitle(for: .arc) == "Import sessions for the websites above from your current browser",
+            "Other browsers use the current-browser websites label"
+        )
+    }
+
+    static func testArcSpaceLabels() throws {
+        try expect(
+            ArcSidebarReader.listLabel(spaceName: "Personal", profileName: "CODE") == "Personal · CODE",
+            "Arc rows show the space and the profile"
+        )
+        let sidebar: [String: Any] = [
+            "sidebar": [
+                "containers": [
+                    ["global": []],
+                    [
+                        "spaces": [
+                            "thebrowser.company.defaultPersonalSpaceID",
+                            [
+                                "id": "thebrowser.company.defaultPersonalSpaceID",
+                                "title": "Personal",
+                                "profile": [
+                                    "custom": [
+                                        "_0": ["directoryBasename": "Profile 1"]
+                                    ]
+                                ]
+                            ],
+                            "space-code",
+                            [
+                                "id": "space-code",
+                                "title": "CODE",
+                                "profile": [
+                                    "custom": [
+                                        "_0": ["directoryBasename": "Profile 3"]
+                                    ]
+                                ]
+                            ],
+                            [
+                                "id": "system-space",
+                                "title": "Hidden",
+                                "profile": [
+                                    "custom": [
+                                        "_0": ["directoryBasename": "Profile 4"]
+                                    ]
+                                ]
+                            ],
+                            [
+                                "id": "missing-cookies",
+                                "title": "Empty",
+                                "profile": [
+                                    "custom": [
+                                        "_0": ["directoryBasename": "Profile 8"]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        let databases: [String: URL] = [
+            "Profile 1": URL(fileURLWithPath: "/tmp/Profile 1/Cookies"),
+            "Profile 3": URL(fileURLWithPath: "/tmp/Profile 3/Cookies"),
+            "Profile 4": URL(fileURLWithPath: "/tmp/Profile 4/Cookies")
+        ]
+        let profiles = ArcSidebarReader.profiles(
+            in: sidebar,
+            profileNames: [
+                "Profile 1": "CODE",
+                "Profile 3": "University",
+                "Profile 4": "__ARC_SYSTEM_PROFILE"
+            ],
+            cookieDatabase: { databases[$0] }
+        )
+        try expect(profiles.map(\.name) == ["Personal · CODE", "CODE · University"], "Arc lists each space with its profile and skips system profiles")
+        try expect(profiles.first?.isDefault == true, "Arc's personal space is the default")
+        try expect(profiles.first?.cookieDatabaseURL == databases["Profile 1"], "A space imports cookies from its profile")
     }
 
     static func testHostMatching() throws {

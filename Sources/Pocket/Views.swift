@@ -344,7 +344,7 @@ struct PocketStageView: View {
                                 model: model,
                                 slot: slot,
                                 isFocused: slot.index == model.activeSlot?.index,
-                                showsFocusBorder: count > 1
+                                showsFocusBorder: count > 1 && chromeShown
                             )
                             .frame(width: paneWidth, height: paneHeight)
                         } else {
@@ -429,7 +429,8 @@ private struct ScreenPane: View {
             Rectangle()
                 .strokeBorder(slot.app.tint, lineWidth: CompactLayout.focusBorderWidth)
                 .opacity(showsFocusBorder && isFocused ? 1 : 0)
-                .animation(.easeOut(duration: 0.15), value: isFocused)
+                .animation(.easeOut(duration: 0.16), value: isFocused)
+                .animation(.easeOut(duration: 0.16), value: showsFocusBorder)
                 .allowsHitTesting(false)
         }
     }
@@ -1052,17 +1053,6 @@ struct WebsiteManagerSheet: View {
             }
             .padding(.bottom, 12)
 
-            Button {
-                isBrowserImportPresented = true
-            } label: {
-                Label(BrowserSessionImporter.buttonTitle(), systemImage: "arrow.down.circle")
-            }
-            .buttonStyle(.bordered)
-            .padding(.bottom, 18)
-            .sheet(isPresented: $isBrowserImportPresented) {
-                BrowserImportSheet(model: model)
-            }
-
             ScrollView {
                 LazyVStack(spacing: 8) {
                     ForEach(model.websites) { website in
@@ -1078,13 +1068,24 @@ struct WebsiteManagerSheet: View {
             }
             .scrollIndicators(.visible)
 
-            HStack {
-                Spacer()
+            HStack(alignment: .center, spacing: 12) {
+                Button {
+                    isBrowserImportPresented = true
+                } label: {
+                    Text(BrowserSessionImporter.websitesButtonTitle())
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.bordered)
+
+                Spacer(minLength: 12)
 
                 Button("Done") {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+            }
+            .sheet(isPresented: $isBrowserImportPresented) {
+                BrowserImportSheet(model: model)
             }
             .padding(.top, 18)
         }
@@ -1643,7 +1644,7 @@ struct BrowserImportSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if offer.profiles.count > 1 {
-                Picker("Profile", selection: $selectedProfileID) {
+                Picker(offer.profileMenuTitle, selection: $selectedProfileID) {
                     ForEach(offer.profiles) { profile in
                         Text(profile.name).tag(profile.id)
                     }
@@ -1651,7 +1652,7 @@ struct BrowserImportSheet: View {
                 .pickerStyle(.menu)
                 .disabled(isImporting)
             } else if let profile = offer.profiles.first {
-                Text("Profile: \(profile.name)")
+                Text("\(offer.profileMenuTitle): \(profile.name)")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white)
             }

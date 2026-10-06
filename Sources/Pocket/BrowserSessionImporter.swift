@@ -90,6 +90,7 @@ struct BrowserImportOffer: Equatable {
     var explanation: String
     var profiles: [BrowserProfile]
     var canImport: Bool
+    var profileMenuTitle: String
 }
 
 struct BrowserImportReport: Sendable, Equatable {
@@ -288,6 +289,17 @@ enum BrowserSessionImporter {
         defaultBrowser == .chrome ? "Import from Chrome" : "Import from your current browser"
     }
 
+    static func websitesButtonTitle() -> String {
+        websitesButtonTitle(for: detectDefaultBrowser())
+    }
+
+    static func websitesButtonTitle(for defaultBrowser: BrowserKind?) -> String {
+        if defaultBrowser == .chrome {
+            return "Import sessions for the websites above from Chrome"
+        }
+        return "Import sessions for the websites above from your current browser"
+    }
+
     static func detectDefaultBrowser() -> BrowserKind? {
         guard let url = URL(string: "https://example.com"),
               let appURL = NSWorkspace.shared.urlForApplication(toOpen: url),
@@ -308,7 +320,8 @@ enum BrowserSessionImporter {
                     browserName: defaultBrowser.displayName,
                     explanation: explanation(for: defaultBrowser, defaultBrowser: defaultBrowser, usedFallback: false),
                     profiles: profiles,
-                    canImport: true
+                    canImport: true,
+                    profileMenuTitle: profileMenuTitle(for: defaultBrowser, profiles: profiles)
                 )
             }
         }
@@ -316,12 +329,14 @@ enum BrowserSessionImporter {
         if let fallback = preferredSources.first(where: { source in
             source != defaultBrowser && !profiles(for: source).isEmpty
         }) {
+            let profiles = profiles(for: fallback)
             return BrowserImportOffer(
                 buttonTitle: title,
                 browserName: fallback.displayName,
                 explanation: explanation(for: fallback, defaultBrowser: defaultBrowser, usedFallback: true),
-                profiles: profiles(for: fallback),
-                canImport: true
+                profiles: profiles,
+                canImport: true,
+                profileMenuTitle: profileMenuTitle(for: fallback, profiles: profiles)
             )
         }
 
@@ -330,7 +345,8 @@ enum BrowserSessionImporter {
             browserName: defaultBrowser?.displayName ?? "your browser",
             explanation: "Pocket couldn't find Chrome, Edge, Brave, Arc, Chromium, or Firefox cookies on this Mac.",
             profiles: [],
-            canImport: false
+            canImport: false,
+            profileMenuTitle: "Profile"
         )
     }
 
@@ -340,9 +356,18 @@ enum BrowserSessionImporter {
             return firefoxProfiles()
         case .safari:
             return []
+        case .arc:
+            let spaces = arcSpaceProfiles()
+            if !spaces.isEmpty { return spaces }
+            return chromiumProfiles(kind: .arc).filter { !isArcSystemProfile($0.name) }
         default:
             return chromiumProfiles(kind: kind)
         }
+    }
+
+    private static func profileMenuTitle(for kind: BrowserKind, profiles: [BrowserProfile]) -> String {
+        guard kind == .arc, profiles.contains(where: { $0.name.contains(" · ") }) else { return "Profile" }
+        return "Space"
     }
 
     static func importCookies(
@@ -791,6 +816,95 @@ private func makeSnapshot(of databaseURL: URL) throws -> CookieSnapshot {
         )
     }
     return CookieSnapshot(databaseURL: destination, directory: directory)
+}
+
+private func isArcSystemProfile(_ name: String) -> Bool {
+    name == "__ARC_SYSTEM_PROFILE" || name.hasPrefix("__ARC_")
+}
+
+private func arcSpaceProfiles() -> [BrowserProfile] {
+    let root = supportDirectory(for: .arc)
+    let sidebarURL = root.deletingLastPathComponent().appendingPathComponent("StorableSidebar.json")
+    guard let data = try? Data(contentsOf: sidebarURL),
+          let json = try? JSONSerialization.jsonObject(with: data) else {
+        return []
+    }
+    let names = chromiumProfileNames(in: root)
+    return ArcSidebarReader.profiles(
+        in: json,
+        profileNames: names,
+        cookieDatabase: { directoryName in
+            let directory = root.appendingPathComponent(directoryName, isDirectory: true)
+            return cookieDatabase(in: directory, firefox: false)
+        }
+    )
+}
+
+enum ArcSidebarReader {
+    static func listLabel(spaceName: String, profileName: String) -> String {
+        "\(spaceName) · \(profileName)"
+    }
+
+    static func profiles(
+        in json: Any,
+        profileNames: [String: String],
+        cookieDatabase: (String) -> URL?
+    ) -> [BrowserProfile] {
+        guard let root = json as? [String: Any],
+              let sidebar = root["sidebar"] as? [String: Any],
+              let containers = sidebar["containers"] as? [Any] else {
+            return []
+        }
+
+        var profiles: [BrowserProfile] = []
+        var seenSpaceIDs: Set<String> = []
+        for container in containers {
+            guard let container = container as? [String: Any],
+                  let spaces = container["spaces"] as? [Any] else {
+                continue
+            }
+            for item in spaces {
+                guard let space = item as? [String: Any],
+                      let spaceID = trimmed(space["id"]),
+                      seenSpaceIDs.insert(spaceID).inserted,
+                      let spaceName = trimmed(space["title"]),
+                      let directory = profileDirectory(in: space["profile"]),
+                      let database = cookieDatabase(directory) else {
+                    continue
+                }
+                let storedName = profileNames[directory]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let profileName = (storedName?.isEmpty == false ? storedName : nil) ?? directory
+                if isArcSystemProfile(profileName) { continue }
+                profiles.append(
+                    BrowserProfile(
+                        id: "arc:\(spaceID)",
+                        name: listLabel(spaceName: spaceName, profileName: profileName),
+                        cookieDatabaseURL: database,
+                        kind: .arc,
+                        isDefault: spaceID == "thebrowser.company.defaultPersonalSpaceID"
+                    )
+                )
+            }
+        }
+        return profiles
+    }
+
+    private static func profileDirectory(in profile: Any?) -> String? {
+        guard let profile = profile as? [String: Any] else { return nil }
+        if let custom = profile["custom"] as? [String: Any] {
+            let record = (custom["_0"] as? [String: Any]) ?? custom
+            if let directory = trimmed(record["directoryBasename"]) {
+                return directory
+            }
+        }
+        return nil
+    }
+
+    private static func trimmed(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 private func chromiumProfiles(kind: BrowserKind) -> [BrowserProfile] {
