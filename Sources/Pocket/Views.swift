@@ -103,12 +103,63 @@ private enum PocketRootSheet: Identifiable {
     }
 }
 
+struct PocketTopChrome: View {
+    @ObservedObject var model: PocketModel
+    @ObservedObject private var windowManager = WindowManager.shared
+
+    private var shown: Bool {
+        windowManager.isChromeVisible || model.isSiteMenuPresented
+    }
+
+    var body: some View {
+        ZStack {
+            if shown, let slot = model.activeSlot {
+                ScreenControlsBar(
+                    model: model,
+                    slot: slot,
+                    showsWindowButtons: true,
+                    isSiteMenuPresented: $model.isSiteMenuPresented
+                )
+                .padding(.horizontal, 12)
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(shown ? Color.pocketChrome : Color.clear)
+        .animation(.easeOut(duration: 0.16), value: shown)
+        .ignoresSafeArea()
+    }
+}
+
+struct PocketBottomChrome: View {
+    @ObservedObject var model: PocketModel
+    @ObservedObject private var windowManager = WindowManager.shared
+
+    private var shown: Bool {
+        windowManager.isChromeVisible || model.isLayoutMenuPresented
+    }
+
+    var body: some View {
+        ZStack {
+            if shown {
+                CompactControls(
+                    model: model,
+                    isLayoutMenuPresented: $model.isLayoutMenuPresented
+                )
+                .transition(.opacity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(shown ? Color.pocketChrome : Color.clear)
+        .animation(.easeOut(duration: 0.16), value: shown)
+        .ignoresSafeArea()
+    }
+}
+
 struct PocketStageView: View {
     @ObservedObject var model: PocketModel
     @State private var topBarVisible = false
     @State private var bottomBarVisible = false
-    @State private var siteMenuOpen = false
-    @State private var layoutMenuOpen = false
     @State private var topShowWork: DispatchWorkItem?
     @State private var topHideWork: DispatchWorkItem?
     @State private var bottomShowWork: DispatchWorkItem?
@@ -118,72 +169,41 @@ struct PocketStageView: View {
         GeometryReader { proxy in
             let count = max(model.visibleSlots.count, 1)
             let availableWidth = max(proxy.size.width, 1)
-            let showsTop = topBarVisible || siteMenuOpen
-            let showsBottom = bottomBarVisible || layoutMenuOpen
-            let topHeight = showsTop ? CompactLayout.screenBarHeight : 0
-            let bottomHeight = showsBottom ? CompactLayout.controlsStripHeight : 0
             let totalHeight = max(proxy.size.height, 1)
-            let contentHeight = max(totalHeight - topHeight - bottomHeight, 1)
             let grid = gridMetrics(count: count)
             let gapX: CGFloat = grid.columns > 1 ? CompactLayout.paneGap : 0
             let gapY: CGFloat = grid.rows > 1 ? CompactLayout.paneGap : 0
+            let contentSize = CGSize(width: availableWidth, height: totalHeight)
 
-            VStack(spacing: 0) {
-                if showsTop, let active = model.activeSlot {
-                    sharedTopBar(for: active)
-                        .transition(.move(edge: .top))
-                }
-
-                paneGrid(
-                    count: count,
-                    width: availableWidth,
-                    height: contentHeight,
-                    columns: grid.columns,
-                    rows: grid.rows,
-                    gapX: gapX,
-                    gapY: gapY
-                )
-
-                if showsBottom {
-                    bottomChrome
-                        .transition(.move(edge: .bottom))
-                }
-            }
+            paneGrid(
+                count: count,
+                width: availableWidth,
+                height: totalHeight,
+                columns: grid.columns,
+                rows: grid.rows,
+                gapX: gapX,
+                gapY: gapY
+            )
             .frame(width: availableWidth, height: totalHeight, alignment: .top)
             .background(model.presentationMode == .screen ? Color.black : Color.clear)
-            .animation(.easeOut(duration: 0.22), value: showsTop)
-            .animation(.easeOut(duration: 0.22), value: showsBottom)
             .overlay {
                 HoverTrackingView(
                     onHoverChanged: { hovering in
-                        if !hovering {
+                        if hovering {
+                            scheduleShow(top: true)
+                            scheduleShow(top: false)
+                        } else {
                             scheduleHide(top: true)
                             scheduleHide(top: false)
                         }
                     },
                     onLocationChanged: { point in
-                        guard let point else { return }
-                        let inTop = point.y < (showsTop ? topHeight : CompactLayout.topRevealHeight)
-                        if inTop {
-                            scheduleShow(top: true)
-                        } else {
-                            scheduleHide(top: true)
-                        }
-
-                        let inBottom = point.y > totalHeight - (showsBottom ? bottomHeight : CompactLayout.bottomRevealHeight)
-                        if inBottom {
-                            scheduleShow(top: false)
-                        } else {
-                            scheduleHide(top: false)
-                        }
+                        guard point != nil else { return }
+                        scheduleShow(top: true)
+                        scheduleShow(top: false)
                     },
                     onMouseDown: { point in
-                        guard point.y >= topHeight, point.y <= totalHeight - bottomHeight else { return }
-                        let contentPoint = CGPoint(x: point.x, y: point.y - topHeight)
-                        let contentSize = CGSize(width: availableWidth, height: contentHeight)
-                        if let index = slotIndex(at: contentPoint, size: contentSize, count: count) {
-                            model.focusedSlotIndex = index
-                        }
+                        focusPane(at: point, contentSize: contentSize, count: count)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -192,43 +212,22 @@ struct PocketStageView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(model.presentationMode == .screen ? Color.black : Color.clear)
-    }
-
-    private func sharedTopBar(for active: ScreenSlot) -> some View {
-        ScreenControlsBar(
-            model: model,
-            slot: active,
-            showsWindowButtons: true,
-            isSiteMenuPresented: $siteMenuOpen
-        )
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity)
-        .frame(height: CompactLayout.screenBarHeight)
-        .background(Color.pocketChrome)
-        .contentShape(Rectangle())
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(height: 1)
+        .onAppear {
+            WindowManager.shared.setChromeVisible(chromeShown)
         }
-        .id(active.index)
+        .onChange(of: chromeShown) { _, shown in
+            WindowManager.shared.setChromeVisible(shown)
+        }
     }
 
-    private var bottomChrome: some View {
-        Color.pocketChrome
-            .frame(height: CompactLayout.controlsStripHeight)
-            .frame(maxWidth: .infinity)
-            .overlay {
-                CompactControls(
-                    model: model,
-                    isLayoutMenuPresented: $layoutMenuOpen
-                )
-            }
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(Color.white.opacity(0.08))
-                    .frame(height: 1)
-            }
+    private var chromeShown: Bool {
+        topBarVisible || bottomBarVisible || model.isSiteMenuPresented || model.isLayoutMenuPresented
+    }
+
+    private func focusPane(at point: CGPoint, contentSize: CGSize, count: Int) {
+        guard let index = slotIndex(at: point, size: contentSize, count: count) else { return }
+        guard model.focusedSlotIndex != index else { return }
+        model.focusedSlotIndex = index
     }
 
     private func scheduleShow(top: Bool) {
@@ -266,8 +265,8 @@ struct PocketStageView: View {
         if top ? !topBarVisible : !bottomBarVisible {
             return
         }
-        if top, siteMenuOpen { return }
-        if !top, layoutMenuOpen { return }
+        if top, model.isSiteMenuPresented { return }
+        if !top, model.isLayoutMenuPresented { return }
 
         let pending = top ? topHideWork : bottomHideWork
         guard pending == nil else { return }
@@ -345,7 +344,7 @@ struct PocketStageView: View {
                                 model: model,
                                 slot: slot,
                                 isFocused: slot.index == model.activeSlot?.index,
-                                showsFocusLine: count > 1
+                                showsFocusBorder: count > 1
                             )
                             .frame(width: paneWidth, height: paneHeight)
                         } else {
@@ -412,7 +411,7 @@ private struct ScreenPane: View {
     @ObservedObject var model: PocketModel
     @ObservedObject var slot: ScreenSlot
     var isFocused: Bool
-    var showsFocusLine: Bool
+    var showsFocusBorder: Bool
 
     var body: some View {
         Group {
@@ -426,11 +425,10 @@ private struct ScreenPane: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .overlay(alignment: .top) {
+        .overlay {
             Rectangle()
-                .fill(slot.app.tint)
-                .frame(height: CompactLayout.focusLineHeight)
-                .opacity(showsFocusLine && isFocused ? 1 : 0)
+                .strokeBorder(slot.app.tint, lineWidth: CompactLayout.focusBorderWidth)
+                .opacity(showsFocusBorder && isFocused ? 1 : 0)
                 .animation(.easeOut(duration: 0.15), value: isFocused)
                 .allowsHitTesting(false)
         }

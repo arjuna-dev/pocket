@@ -216,7 +216,7 @@ enum CompactLayout {
     static let bottomRevealHeight: CGFloat = 24
     static let revealDelay: TimeInterval = 0.25
     static let hideDelay: TimeInterval = 0.6
-    static let focusLineHeight: CGFloat = 2
+    static let focusBorderWidth: CGFloat = 2.25
 }
 
 extension PresentationMode {
@@ -297,6 +297,8 @@ final class PocketModel: ObservableObject {
 
     @Published var isWebsiteManagerPresented = false
     @Published var isBrowserImportPresented = false
+    @Published var isSiteMenuPresented = false
+    @Published var isLayoutMenuPresented = false
     @Published var alwaysOnTop: Bool {
         didSet {
             UserDefaults.standard.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)

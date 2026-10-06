@@ -1,8 +1,10 @@
 import AppKit
 import SwiftUI
 
-final class WindowManager {
+final class WindowManager: ObservableObject {
     static let shared = WindowManager()
+
+    @Published private(set) var isChromeVisible = false
 
     private weak var window: NSWindow?
     private var alwaysOnTop = false
@@ -13,6 +15,9 @@ final class WindowManager {
     private var resizeObserver: NSObjectProtocol?
     private var closeObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
+    private let resizeDelegate = ChromeResizeDelegate()
+    private var outerTop: CGFloat { CompactLayout.screenBarHeight }
+    private var outerBottom: CGFloat { CompactLayout.controlsStripHeight }
 
     private init() {}
 
@@ -25,6 +30,8 @@ final class WindowManager {
         lastContentSize = nil
 
         self.window = window
+        resizeDelegate.manager = self
+        window.delegate = resizeDelegate
         window.title = "Pocket"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -56,17 +63,21 @@ final class WindowManager {
             screenCount: currentScreenCount,
             scale: scale
         )
-        let contentSize = fittedToVisibleScreen(proposed, on: window)
+        let screenSize = fittedToVisibleScreen(proposed, on: window)
         if !force, let lastContentSize,
-           abs(lastContentSize.width - contentSize.width) < 1,
-           abs(lastContentSize.height - contentSize.height) < 1 {
+           abs(lastContentSize.width - screenSize.width) < 1,
+           abs(lastContentSize.height - screenSize.height) < 1 {
             return
         }
 
         let oldFrame = window.frame
         window.contentMinSize = CGSize(
-            width: max(280, contentSize.width * 0.62),
-            height: max(220, contentSize.height * 0.62)
+            width: max(280, screenSize.width * 0.62),
+            height: max(220, screenSize.height * 0.62)
+        )
+        let contentSize = CGSize(
+            width: screenSize.width,
+            height: screenSize.height + outerTop + outerBottom
         )
         window.setContentSize(contentSize)
 
@@ -74,7 +85,12 @@ final class WindowManager {
         newFrame.origin.x = oldFrame.midX - newFrame.width / 2
         newFrame.origin.y = oldFrame.midY - newFrame.height / 2
         window.setFrame(newFrame, display: true, animate: animated)
-        lastContentSize = contentSize
+        lastContentSize = screenSize
+    }
+
+    func setChromeVisible(_ visible: Bool) {
+        guard isChromeVisible != visible else { return }
+        isChromeVisible = visible
     }
 
     func ensureInitialSize(
@@ -202,7 +218,12 @@ final class WindowManager {
         guard let window, let currentMode, let currentOrientation else { return }
 
         let contentSize = window.contentRect(forFrameRect: window.frame).size
-        guard contentSize.width > 0, contentSize.height > 0 else { return }
+        let screenSize = CGSize(
+            width: contentSize.width,
+            height: max(1, contentSize.height - outerTop - outerBottom)
+        )
+        guard screenSize.width > 0, screenSize.height > 0 else { return }
+        lastContentSize = screenSize
 
         let baseSize = currentMode.contentSize(
             for: currentOrientation,
@@ -210,7 +231,7 @@ final class WindowManager {
         )
         guard baseSize.width > 0 else { return }
         UserDefaults.standard.set(
-            contentSize.width / baseSize.width,
+            screenSize.width / baseSize.width,
             forKey: scaleKey(for: currentMode)
         )
     }
@@ -229,7 +250,8 @@ final class WindowManager {
         guard size.width > 1, size.height > 1 else { return size }
         let visible = (window.screen ?? NSScreen.main)?.visibleFrame.insetBy(dx: 20, dy: 20)
         guard let visible, visible.width > 1, visible.height > 1 else { return size }
-        let fit = min(1, visible.width / size.width, visible.height / size.height)
+        let availableHeight = max(visible.height - outerTop - outerBottom, 1)
+        let fit = min(1, visible.width / size.width, availableHeight / size.height)
         return CGSize(width: floor(size.width * fit), height: floor(size.height * fit))
     }
 
@@ -257,10 +279,7 @@ final class WindowManager {
         window.hasShadow = false
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.contentAspectRatio = mode.contentSize(
-            for: orientation,
-            screenCount: screenCount
-        )
+        window.contentAspectRatio = .zero
         setStandardWindowButtonsHidden(true, on: window)
     }
 
@@ -274,6 +293,156 @@ final class WindowManager {
         for buttonType in buttonTypes {
             window.standardWindowButton(buttonType)?.isHidden = hidden
         }
+    }
+
+    private func clampedToVisibleScreen(_ frame: NSRect, window: NSWindow) -> NSRect {
+        guard let visible = (window.screen ?? NSScreen.main)?.visibleFrame else { return frame }
+        var frame = frame
+        if frame.width > visible.width {
+            frame.size.width = visible.width
+        }
+        if frame.height > visible.height {
+            frame.size.height = visible.height
+        }
+        if frame.maxX > visible.maxX {
+            frame.origin.x -= frame.maxX - visible.maxX
+        }
+        if frame.minX < visible.minX {
+            frame.origin.x = visible.minX
+        }
+        if frame.maxY > visible.maxY {
+            frame.origin.y -= frame.maxY - visible.maxY
+        }
+        if frame.minY < visible.minY {
+            frame.origin.y = visible.minY
+        }
+        return frame
+    }
+
+    func frameSizePreservingScreenAspect(_ frameSize: NSSize, window: NSWindow) -> NSSize {
+        guard let currentMode, let currentOrientation else { return frameSize }
+        let base = currentMode.contentSize(
+            for: currentOrientation,
+            screenCount: currentScreenCount
+        )
+        guard base.width > 1, base.height > 1 else { return frameSize }
+        let aspect = base.width / base.height
+
+        let proposedContent = window.contentRect(
+            forFrameRect: NSRect(origin: .zero, size: frameSize)
+        ).size
+        let currentContent = window.contentRect(forFrameRect: window.frame).size
+        let widthDelta = abs(proposedContent.width - currentContent.width)
+        let heightDelta = abs(proposedContent.height - currentContent.height)
+        let screenWidth = max(proposedContent.width, 1)
+        let screenHeight = max(proposedContent.height - outerTop - outerBottom, 1)
+
+        var content = proposedContent
+        if widthDelta >= heightDelta {
+            content.width = screenWidth
+            content.height = screenWidth / aspect + outerTop + outerBottom
+        } else {
+            content.height = screenHeight + outerTop + outerBottom
+            content.width = screenHeight * aspect
+        }
+
+        let minWidth = max(280, base.width * 0.62)
+        if content.width < minWidth {
+            content.width = minWidth
+            content.height = minWidth / aspect + outerTop + outerBottom
+        }
+
+        return window.frameRect(forContentRect: NSRect(origin: .zero, size: content)).size
+    }
+
+    func standardFrame(for window: NSWindow, defaultFrame: NSRect) -> NSRect {
+        guard let currentMode, let currentOrientation else { return defaultFrame }
+        let base = currentMode.contentSize(
+            for: currentOrientation,
+            screenCount: currentScreenCount
+        )
+        guard base.width > 1, base.height > 1 else { return defaultFrame }
+        let aspect = base.width / base.height
+        let availableHeight = max(defaultFrame.height - outerTop - outerBottom, 1)
+        var screenWidth = defaultFrame.width
+        var screenHeight = screenWidth / aspect
+        if screenHeight > availableHeight {
+            screenHeight = availableHeight
+            screenWidth = screenHeight * aspect
+        }
+        let content = CGSize(
+            width: screenWidth,
+            height: screenHeight + outerTop + outerBottom
+        )
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: content))
+        frame.origin.x = defaultFrame.midX - frame.width / 2
+        frame.origin.y = defaultFrame.midY - frame.height / 2
+        return clampedToVisibleScreen(frame, window: window)
+    }
+}
+
+final class PocketChromeContainer: NSView {
+    let screenHost: NSView
+    let topHost: NSView
+    let bottomHost: NSView
+    private var topHeight: CGFloat = 0
+    private var bottomHeight: CGFloat = 0
+
+    init(screenHost: NSView, topHost: NSView, bottomHost: NSView) {
+        self.screenHost = screenHost
+        self.topHost = topHost
+        self.bottomHost = bottomHost
+        topHeight = CompactLayout.screenBarHeight
+        bottomHeight = CompactLayout.controlsStripHeight
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        autoresizesSubviews = false
+
+        for host in [screenHost, topHost, bottomHost] {
+            host.translatesAutoresizingMaskIntoConstraints = true
+            host.autoresizingMask = []
+            host.wantsLayer = true
+        }
+        screenHost.clipsToBounds = true
+        addSubview(screenHost)
+        addSubview(bottomHost)
+        addSubview(topHost)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("PocketChromeContainer is created in code")
+    }
+
+    override func layout() {
+        super.layout()
+        let width = bounds.width
+        let screenHeight = max(1, bounds.height - topHeight - bottomHeight)
+        bottomHost.frame = NSRect(x: 0, y: 0, width: width, height: bottomHeight)
+        screenHost.frame = NSRect(x: 0, y: bottomHeight, width: width, height: screenHeight)
+        topHost.frame = NSRect(
+            x: 0,
+            y: bottomHeight + screenHeight,
+            width: width,
+            height: topHeight
+        )
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        layoutSubtreeIfNeeded()
+    }
+}
+
+private final class ChromeResizeDelegate: NSObject, NSWindowDelegate {
+    weak var manager: WindowManager?
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        manager?.frameSizePreservingScreenAspect(frameSize, window: sender) ?? frameSize
+    }
+
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        manager?.standardFrame(for: window, defaultFrame: newFrame) ?? newFrame
     }
 }
 

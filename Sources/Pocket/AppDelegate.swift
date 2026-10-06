@@ -18,6 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let model = PocketModel.shared
+        let screenHost = NSHostingView(rootView: AppRootView(model: model))
+        let topHost = NSHostingView(rootView: PocketTopChrome(model: model))
+        let bottomHost = NSHostingView(rootView: PocketBottomChrome(model: model))
+        screenHost.sizingOptions = []
+        topHost.sizingOptions = []
+        bottomHost.sizingOptions = []
+        screenHost.safeAreaRegions = []
+        topHost.safeAreaRegions = []
+        bottomHost.safeAreaRegions = []
         let panel = PocketPanel(
             contentRect: NSRect(x: 0, y: 0, width: 344, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable,
@@ -28,7 +37,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = false
-        panel.contentView = NSHostingView(rootView: AppRootView(model: model))
+        panel.contentView = PocketChromeContainer(
+            screenHost: screenHost,
+            topHost: topHost,
+            bottomHost: bottomHost
+        )
         self.panel = panel
 
         WindowManager.shared.attach(window: panel)
