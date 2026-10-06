@@ -355,7 +355,9 @@ struct WindowDragHandle: NSViewRepresentable {
 final class HoverTrackingNSView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
     var onLocationChanged: ((CGPoint?) -> Void)?
+    var onMouseDown: ((CGPoint) -> Void)?
     private var mouseEventMonitor: Any?
+    private var mouseDownMonitor: Any?
     private var isHovering = false
     private var lastPoint: CGPoint?
 
@@ -374,6 +376,14 @@ final class HoverTrackingNSView: NSView {
 
         mouseEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
             self?.updateHoverState(for: event)
+            return event
+        }
+
+        mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+            if let self, let window = self.window, event.window?.windowNumber == window.windowNumber,
+               let point = self.swiftPoint(fromScreen: window.convertPoint(toScreen: event.locationInWindow)) {
+                self.onMouseDown?(point)
+            }
             return event
         }
 
@@ -423,6 +433,11 @@ final class HoverTrackingNSView: NSView {
             NSEvent.removeMonitor(mouseEventMonitor)
         }
         mouseEventMonitor = nil
+
+        if let mouseDownMonitor {
+            NSEvent.removeMonitor(mouseDownMonitor)
+        }
+        mouseDownMonitor = nil
     }
 
     private func updateHoverState(for event: NSEvent) {
@@ -481,17 +496,20 @@ final class HoverTrackingNSView: NSView {
 struct HoverTrackingView: NSViewRepresentable {
     let onHoverChanged: (Bool) -> Void
     var onLocationChanged: ((CGPoint?) -> Void)?
+    var onMouseDown: ((CGPoint) -> Void)? = nil
 
     func makeNSView(context: Context) -> HoverTrackingNSView {
         let view = HoverTrackingNSView(frame: .zero)
         view.onHoverChanged = onHoverChanged
         view.onLocationChanged = onLocationChanged
+        view.onMouseDown = onMouseDown
         return view
     }
 
     func updateNSView(_ nsView: HoverTrackingNSView, context: Context) {
         nsView.onHoverChanged = onHoverChanged
         nsView.onLocationChanged = onLocationChanged
+        nsView.onMouseDown = onMouseDown
     }
 }
 

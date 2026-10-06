@@ -105,24 +105,35 @@ private enum PocketRootSheet: Identifiable {
 
 struct PocketStageView: View {
     @ObservedObject var model: PocketModel
-    @State private var controlsVisible = false
-    @State private var hoveredSlot: Int?
-    @State private var siteMenuSlot: Int?
+    @State private var topBarVisible = false
+    @State private var bottomBarVisible = false
+    @State private var siteMenuOpen = false
     @State private var layoutMenuOpen = false
+    @State private var topShowWork: DispatchWorkItem?
+    @State private var topHideWork: DispatchWorkItem?
+    @State private var bottomShowWork: DispatchWorkItem?
+    @State private var bottomHideWork: DispatchWorkItem?
 
     var body: some View {
         GeometryReader { proxy in
             let count = max(model.visibleSlots.count, 1)
             let availableWidth = max(proxy.size.width, 1)
-            let showsChrome = controlsVisible || layoutMenuOpen || siteMenuSlot != nil
-            let stripHeight = showsChrome ? CompactLayout.controlsStripHeight : 0
-            let contentHeight = max(proxy.size.height - stripHeight, 1)
-            let contentSize = CGSize(width: availableWidth, height: contentHeight)
+            let showsTop = topBarVisible || siteMenuOpen
+            let showsBottom = bottomBarVisible || layoutMenuOpen
+            let topHeight = showsTop ? CompactLayout.screenBarHeight : 0
+            let bottomHeight = showsBottom ? CompactLayout.controlsStripHeight : 0
+            let totalHeight = max(proxy.size.height, 1)
+            let contentHeight = max(totalHeight - topHeight - bottomHeight, 1)
             let grid = gridMetrics(count: count)
             let gapX: CGFloat = grid.columns > 1 ? CompactLayout.paneGap : 0
             let gapY: CGFloat = grid.rows > 1 ? CompactLayout.paneGap : 0
 
             VStack(spacing: 0) {
+                if showsTop, let active = model.activeSlot {
+                    sharedTopBar(for: active)
+                        .transition(.move(edge: .top))
+                }
+
                 paneGrid(
                     count: count,
                     width: availableWidth,
@@ -133,36 +144,45 @@ struct PocketStageView: View {
                     gapY: gapY
                 )
 
-                if showsChrome {
+                if showsBottom {
                     bottomChrome
                         .transition(.move(edge: .bottom))
                 }
             }
-            .frame(width: availableWidth, height: max(proxy.size.height, 1), alignment: .top)
+            .frame(width: availableWidth, height: totalHeight, alignment: .top)
             .background(model.presentationMode == .screen ? Color.black : Color.clear)
-            .animation(.easeOut(duration: 0.22), value: showsChrome)
+            .animation(.easeOut(duration: 0.22), value: showsTop)
+            .animation(.easeOut(duration: 0.22), value: showsBottom)
             .overlay {
                 HoverTrackingView(
-                    onHoverChanged: { isHovering in
-                        guard controlsVisible != isHovering else { return }
-                        withAnimation(.easeOut(duration: 0.22)) {
-                            controlsVisible = isHovering
-                            if !isHovering {
-                                hoveredSlot = nil
-                            }
+                    onHoverChanged: { hovering in
+                        if !hovering {
+                            scheduleHide(top: true)
+                            scheduleHide(top: false)
                         }
                     },
                     onLocationChanged: { point in
-                        // The strip is part of the window, so keep the current pane's
-                        // top bar while the pointer is on Portrait, Layout, or Pin.
-                        guard let point, point.y < contentHeight else { return }
-                        let next = slotIndex(at: point, size: contentSize, count: count)
-                        guard hoveredSlot != next else { return }
-                        withAnimation(.easeOut(duration: 0.22)) {
-                            hoveredSlot = next
+                        guard let point else { return }
+                        let inTop = point.y < (showsTop ? topHeight : CompactLayout.topRevealHeight)
+                        if inTop {
+                            scheduleShow(top: true)
+                        } else {
+                            scheduleHide(top: true)
                         }
-                        if let next {
-                            model.focusedSlotIndex = next
+
+                        let inBottom = point.y > totalHeight - (showsBottom ? bottomHeight : CompactLayout.bottomRevealHeight)
+                        if inBottom {
+                            scheduleShow(top: false)
+                        } else {
+                            scheduleHide(top: false)
+                        }
+                    },
+                    onMouseDown: { point in
+                        guard point.y >= topHeight, point.y <= totalHeight - bottomHeight else { return }
+                        let contentPoint = CGPoint(x: point.x, y: point.y - topHeight)
+                        let contentSize = CGSize(width: availableWidth, height: contentHeight)
+                        if let index = slotIndex(at: contentPoint, size: contentSize, count: count) {
+                            model.focusedSlotIndex = index
                         }
                     }
                 )
@@ -172,6 +192,26 @@ struct PocketStageView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(model.presentationMode == .screen ? Color.black : Color.clear)
+    }
+
+    private func sharedTopBar(for active: ScreenSlot) -> some View {
+        ScreenControlsBar(
+            model: model,
+            slot: active,
+            showsWindowButtons: true,
+            isSiteMenuPresented: $siteMenuOpen
+        )
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity)
+        .frame(height: CompactLayout.screenBarHeight)
+        .background(Color.pocketChrome)
+        .contentShape(Rectangle())
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+        }
+        .id(active.index)
     }
 
     private var bottomChrome: some View {
@@ -189,6 +229,89 @@ struct PocketStageView: View {
                     .fill(Color.white.opacity(0.08))
                     .frame(height: 1)
             }
+    }
+
+    private func scheduleShow(top: Bool) {
+        cancelHide(top: top)
+        if top ? topBarVisible : bottomBarVisible {
+            return
+        }
+        let pending = top ? topShowWork : bottomShowWork
+        guard pending == nil else { return }
+
+        let work = DispatchWorkItem {
+            withAnimation(.easeOut(duration: 0.22)) {
+                if top {
+                    topBarVisible = true
+                } else {
+                    bottomBarVisible = true
+                }
+            }
+            if top {
+                topShowWork = nil
+            } else {
+                bottomShowWork = nil
+            }
+        }
+        if top {
+            topShowWork = work
+        } else {
+            bottomShowWork = work
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + CompactLayout.revealDelay, execute: work)
+    }
+
+    private func scheduleHide(top: Bool) {
+        cancelShow(top: top)
+        if top ? !topBarVisible : !bottomBarVisible {
+            return
+        }
+        if top, siteMenuOpen { return }
+        if !top, layoutMenuOpen { return }
+
+        let pending = top ? topHideWork : bottomHideWork
+        guard pending == nil else { return }
+
+        let work = DispatchWorkItem {
+            withAnimation(.easeOut(duration: 0.22)) {
+                if top {
+                    topBarVisible = false
+                } else {
+                    bottomBarVisible = false
+                }
+            }
+            if top {
+                topHideWork = nil
+            } else {
+                bottomHideWork = nil
+            }
+        }
+        if top {
+            topHideWork = work
+        } else {
+            bottomHideWork = work
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + CompactLayout.hideDelay, execute: work)
+    }
+
+    private func cancelShow(top: Bool) {
+        if top {
+            topShowWork?.cancel()
+            topShowWork = nil
+        } else {
+            bottomShowWork?.cancel()
+            bottomShowWork = nil
+        }
+    }
+
+    private func cancelHide(top: Bool) {
+        if top {
+            topHideWork?.cancel()
+            topHideWork = nil
+        } else {
+            bottomHideWork?.cancel()
+            bottomHideWork = nil
+        }
     }
 
     @ViewBuilder
@@ -221,9 +344,8 @@ struct PocketStageView: View {
                             ScreenPane(
                                 model: model,
                                 slot: slot,
-                                showsWindowButtons: true,
-                                showsPaneChrome: showsPaneChrome(for: slot.index),
-                                isSiteMenuPresented: siteMenuBinding(for: slot.index)
+                                isFocused: slot.index == model.activeSlot?.index,
+                                showsFocusLine: count > 1
                             )
                             .frame(width: paneWidth, height: paneHeight)
                         } else {
@@ -235,20 +357,6 @@ struct PocketStageView: View {
             }
         }
         .frame(width: width, height: height, alignment: .topLeading)
-    }
-
-    private func siteMenuBinding(for index: Int) -> Binding<Bool> {
-        Binding(
-            get: { siteMenuSlot == index },
-            set: { isPresented in
-                if isPresented {
-                    siteMenuSlot = index
-                    model.focusedSlotIndex = index
-                } else if siteMenuSlot == index {
-                    siteMenuSlot = nil
-                }
-            }
-        )
     }
 
     private func gridMetrics(count: Int) -> (columns: Int, rows: Int) {
@@ -270,10 +378,6 @@ struct PocketStageView: View {
         let index = column == 0 ? row : 2 + row
         guard index < count else { return nil }
         return model.slots.first { $0.index == index }
-    }
-
-    private func showsPaneChrome(for index: Int) -> Bool {
-        siteMenuSlot == index || (controlsVisible && hoveredSlot == index)
     }
 
     private func slotIndex(at point: CGPoint, size: CGSize, count: Int) -> Int? {
@@ -307,40 +411,29 @@ struct PocketStageView: View {
 private struct ScreenPane: View {
     @ObservedObject var model: PocketModel
     @ObservedObject var slot: ScreenSlot
-    var showsWindowButtons: Bool
-    var showsPaneChrome: Bool
-    @Binding var isSiteMenuPresented: Bool
+    var isFocused: Bool
+    var showsFocusLine: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            if showsPaneChrome {
-                ScreenControlsBar(
-                    model: model,
-                    slot: slot,
-                    showsWindowButtons: showsWindowButtons,
-                    isSiteMenuPresented: $isSiteMenuPresented
-                )
-                .padding(.horizontal, showsWindowButtons ? 12 : 8)
-                .frame(maxWidth: .infinity)
-                .frame(height: CompactLayout.screenBarHeight)
-                .background(Color.pocketChrome)
-                .contentShape(Rectangle())
-                .transition(.move(edge: .top))
+        Group {
+            if model.presentationMode == .device {
+                deviceContent
+            } else {
+                WebContent(controller: slot.controller, cornerRadius: 0)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.black)
             }
-
-            Group {
-                if model.presentationMode == .device {
-                    deviceContent
-                } else {
-                    WebContent(controller: slot.controller, cornerRadius: 0)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color.black)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .animation(.easeOut(duration: 0.22), value: showsPaneChrome)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(slot.app.tint)
+                .frame(height: CompactLayout.focusLineHeight)
+                .opacity(showsFocusLine && isFocused ? 1 : 0)
+                .animation(.easeOut(duration: 0.15), value: isFocused)
+                .allowsHitTesting(false)
+        }
     }
 
     private var deviceContent: some View {

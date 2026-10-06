@@ -212,6 +212,11 @@ enum CompactLayout {
     static let paneGap: CGFloat = 0
     static let screenBarHeight: CGFloat = windowControlsBayHeight
     static let slotCount = 4
+    static let topRevealHeight: CGFloat = 32
+    static let bottomRevealHeight: CGFloat = 24
+    static let revealDelay: TimeInterval = 0.25
+    static let hideDelay: TimeInterval = 0.6
+    static let focusLineHeight: CGFloat = 2
 }
 
 extension PresentationMode {
