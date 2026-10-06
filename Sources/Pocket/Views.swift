@@ -65,10 +65,41 @@ struct AppRootView: View {
         .onChange(of: model.alwaysOnTop) { _, newValue in
             WindowManager.shared.setAlwaysOnTop(newValue)
         }
-        .sheet(isPresented: $model.isWebsiteManagerPresented) {
-            WebsiteManagerSheet(model: model)
+        .sheet(item: rootSheet) { sheet in
+            switch sheet {
+            case .websites:
+                WebsiteManagerSheet(model: model)
+            case .browserImport:
+                BrowserImportSheet(model: model)
+            }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private var rootSheet: Binding<PocketRootSheet?> {
+        Binding(
+            get: {
+                if model.isBrowserImportPresented { return .browserImport }
+                if model.isWebsiteManagerPresented { return .websites }
+                return nil
+            },
+            set: { sheet in
+                model.isWebsiteManagerPresented = sheet == .websites
+                model.isBrowserImportPresented = sheet == .browserImport
+            }
+        )
+    }
+}
+
+private enum PocketRootSheet: Identifiable {
+    case websites
+    case browserImport
+
+    var id: String {
+        switch self {
+        case .websites: return "websites"
+        case .browserImport: return "browserImport"
+        }
     }
 }
 
@@ -83,67 +114,32 @@ struct PocketStageView: View {
         GeometryReader { proxy in
             let count = max(model.visibleSlots.count, 1)
             let availableWidth = max(proxy.size.width, 1)
-            let availableHeight = max(proxy.size.height, 1)
-            let stageSize = CGSize(width: availableWidth, height: availableHeight)
             let showsChrome = controlsVisible || layoutMenuOpen || siteMenuSlot != nil
+            let stripHeight = showsChrome ? CompactLayout.controlsStripHeight : 0
+            let contentHeight = max(proxy.size.height - stripHeight, 1)
+            let contentSize = CGSize(width: availableWidth, height: contentHeight)
             let grid = gridMetrics(count: count)
             let gapX: CGFloat = grid.columns > 1 ? CompactLayout.paneGap : 0
             let gapY: CGFloat = grid.rows > 1 ? CompactLayout.paneGap : 0
 
-            VStack(spacing: gapY) {
-                ForEach(0..<grid.rows, id: \.self) { row in
-                    HStack(spacing: gapX) {
-                        ForEach(0..<grid.columns, id: \.self) { column in
-                            let paneWidth = paneLength(
-                                index: column,
-                                count: grid.columns,
-                                total: availableWidth,
-                                gap: gapX
-                            )
-                            let paneHeight = paneLength(
-                                index: row,
-                                count: grid.rows,
-                                total: availableHeight,
-                                gap: gapY
-                            )
-                            if let slot = slot(row: row, column: column, count: count) {
-                                ScreenPane(
-                                    model: model,
-                                    slot: slot,
-                                    showsWindowButtons: true,
-                                    showsPaneChrome: showsPaneChrome(for: slot.index),
-                                    isSiteMenuPresented: siteMenuBinding(for: slot.index)
-                                )
-                                .frame(width: paneWidth, height: paneHeight)
-                            } else {
-                                Color.clear
-                                    .frame(width: paneWidth, height: paneHeight)
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(width: availableWidth, height: availableHeight, alignment: .topLeading)
-            .background(model.presentationMode == .screen ? Color.black : Color.clear)
-            .overlay(alignment: .bottom) {
+            VStack(spacing: 0) {
+                paneGrid(
+                    count: count,
+                    width: availableWidth,
+                    height: contentHeight,
+                    columns: grid.columns,
+                    rows: grid.rows,
+                    gapX: gapX,
+                    gapY: gapY
+                )
+
                 if showsChrome {
-                    Color.pocketChrome
-                        .frame(height: CompactLayout.controlsStripHeight)
-                        .frame(maxWidth: .infinity)
-                        .overlay {
-                            CompactControls(
-                                model: model,
-                                isLayoutMenuPresented: $layoutMenuOpen
-                            )
-                        }
-                        .overlay(alignment: .top) {
-                            Rectangle()
-                                .fill(Color.white.opacity(0.08))
-                                .frame(height: 1)
-                        }
+                    bottomChrome
                         .transition(.move(edge: .bottom))
                 }
             }
+            .frame(width: availableWidth, height: max(proxy.size.height, 1), alignment: .top)
+            .background(model.presentationMode == .screen ? Color.black : Color.clear)
             .animation(.easeOut(duration: 0.22), value: showsChrome)
             .overlay {
                 HoverTrackingView(
@@ -157,7 +153,10 @@ struct PocketStageView: View {
                         }
                     },
                     onLocationChanged: { point in
-                        let next = point.flatMap { slotIndex(at: $0, size: stageSize, count: count) }
+                        // The strip is part of the window, so keep the current pane's
+                        // top bar while the pointer is on Portrait, Layout, or Pin.
+                        guard let point, point.y < contentHeight else { return }
+                        let next = slotIndex(at: point, size: contentSize, count: count)
                         guard hoveredSlot != next else { return }
                         withAnimation(.easeOut(duration: 0.22)) {
                             hoveredSlot = next
@@ -173,6 +172,69 @@ struct PocketStageView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(model.presentationMode == .screen ? Color.black : Color.clear)
+    }
+
+    private var bottomChrome: some View {
+        Color.pocketChrome
+            .frame(height: CompactLayout.controlsStripHeight)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                CompactControls(
+                    model: model,
+                    isLayoutMenuPresented: $layoutMenuOpen
+                )
+            }
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(height: 1)
+            }
+    }
+
+    @ViewBuilder
+    private func paneGrid(
+        count: Int,
+        width: CGFloat,
+        height: CGFloat,
+        columns: Int,
+        rows: Int,
+        gapX: CGFloat,
+        gapY: CGFloat
+    ) -> some View {
+        VStack(spacing: gapY) {
+            ForEach(0..<rows, id: \.self) { row in
+                HStack(spacing: gapX) {
+                    ForEach(0..<columns, id: \.self) { column in
+                        let paneWidth = paneLength(
+                            index: column,
+                            count: columns,
+                            total: width,
+                            gap: gapX
+                        )
+                        let paneHeight = paneLength(
+                            index: row,
+                            count: rows,
+                            total: height,
+                            gap: gapY
+                        )
+                        if let slot = slot(row: row, column: column, count: count) {
+                            ScreenPane(
+                                model: model,
+                                slot: slot,
+                                showsWindowButtons: true,
+                                showsPaneChrome: showsPaneChrome(for: slot.index),
+                                isSiteMenuPresented: siteMenuBinding(for: slot.index)
+                            )
+                            .frame(width: paneWidth, height: paneHeight)
+                        } else {
+                            Color.clear
+                                .frame(width: paneWidth, height: paneHeight)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(width: width, height: height, alignment: .topLeading)
     }
 
     private func siteMenuBinding(for index: Int) -> Binding<Bool> {
@@ -872,6 +934,7 @@ struct WebsiteManagerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var editorTarget: WebsiteEditorTarget?
     @State private var websitePendingRemoval: SimulatedApp?
+    @State private var isBrowserImportPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -896,7 +959,18 @@ struct WebsiteManagerSheet: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
             }
+            .padding(.bottom, 12)
+
+            Button {
+                isBrowserImportPresented = true
+            } label: {
+                Label(BrowserSessionImporter.buttonTitle(), systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.bordered)
             .padding(.bottom, 18)
+            .sheet(isPresented: $isBrowserImportPresented) {
+                BrowserImportSheet(model: model)
+            }
 
             ScrollView {
                 LazyVStack(spacing: 8) {
@@ -1445,6 +1519,112 @@ struct ErrorOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.20))
+    }
+}
+
+struct BrowserImportSheet: View {
+    @ObservedObject var model: PocketModel
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var offer: BrowserImportOffer
+    @State private var selectedProfileID: String
+    @State private var isImporting = false
+    @State private var resultMessage: String?
+    @State private var errorMessage: String?
+
+    init(model: PocketModel) {
+        self.model = model
+        let offer = BrowserSessionImporter.loadOffer()
+        _offer = State(initialValue: offer)
+        let selected = offer.profiles.first(where: \.isDefault)?.id ?? offer.profiles.first?.id ?? ""
+        _selectedProfileID = State(initialValue: selected)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(offer.buttonTitle)
+                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+
+            Text(offer.explanation)
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.pocketMuted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if offer.profiles.count > 1 {
+                Picker("Profile", selection: $selectedProfileID) {
+                    ForEach(offer.profiles) { profile in
+                        Text(profile.name).tag(profile.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(isImporting)
+            } else if let profile = offer.profiles.first {
+                Text("Profile: \(profile.name)")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+            }
+
+            if let resultMessage {
+                Text(resultMessage)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.42))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack {
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button(isImporting ? "Importing…" : "Import") {
+                    Task { await runImport() }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
+                .disabled(isImporting || !offer.canImport || selectedProfile == nil)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 420)
+        .background(Color.pocketBackground)
+        .preferredColorScheme(.dark)
+    }
+
+    private var selectedProfile: BrowserProfile? {
+        offer.profiles.first { $0.id == selectedProfileID }
+    }
+
+    private func runImport() async {
+        guard let profile = selectedProfile else { return }
+        isImporting = true
+        errorMessage = nil
+        resultMessage = nil
+        defer { isImporting = false }
+
+        let sites = model.websites.map {
+            BrowserImportSite(id: $0.id, title: $0.title, dataStoreKey: $0.dataStoreKey, url: $0.url)
+        }
+        do {
+            let report = try await BrowserSessionImporter.importCookies(from: profile, into: sites)
+            let imported = Set(report.sites.filter { $0.cookieCount > 0 }.map(\.appID))
+            model.reloadSessions(forAppIDs: imported)
+            resultMessage = report.summary
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 }
 

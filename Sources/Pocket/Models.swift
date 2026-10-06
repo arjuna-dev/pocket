@@ -291,6 +291,7 @@ final class PocketModel: ObservableObject {
     }
 
     @Published var isWebsiteManagerPresented = false
+    @Published var isBrowserImportPresented = false
     @Published var alwaysOnTop: Bool {
         didSet {
             UserDefaults.standard.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)
@@ -392,6 +393,13 @@ final class PocketModel: ObservableObject {
     func applyPresentationMode() {
         for controller in sessionControllers.values {
             controller.setPresentationMode(presentationMode)
+        }
+    }
+
+    func reloadSessions(forAppIDs appIDs: Set<String>) {
+        guard !appIDs.isEmpty else { return }
+        for controller in sessionControllers.values where appIDs.contains(controller.app.id) {
+            controller.reloadPage()
         }
     }
 

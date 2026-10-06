@@ -51,6 +51,12 @@ struct PocketApp: App {
                     Toggle("Always on Top", isOn: $model.alwaysOnTop)
                         .keyboardShortcut("t", modifiers: [.control, .option, .command])
                 }
+
+                Section("Sites") {
+                    Button(BrowserSessionImporter.buttonTitle()) {
+                        model.isBrowserImportPresented = true
+                    }
+                }
             }
         }
     }

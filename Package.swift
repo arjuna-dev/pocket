@@ -16,7 +16,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "Pocket",
-            path: "Sources/Pocket"
+            path: "Sources/Pocket",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
         )
     ],
     swiftLanguageModes: [.v5]
