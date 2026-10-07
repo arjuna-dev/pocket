@@ -1,4 +1,0 @@
-Target dependency graph (2 targets)
-Target 'AllExcludingTests' in project 'Aggregate'
-➜ Explicit dependency on target 'Pocket-product' in project 'Pocket'
-Target 'Pocket-product' in project 'Pocket' (no dependencies)
