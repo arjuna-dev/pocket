@@ -209,14 +209,14 @@ enum DeviceOrientation: String, CaseIterable, Identifiable {
 enum CompactLayout {
     static let windowControlsBayHeight: CGFloat = 40
     static let controlsStripHeight: CGFloat = windowControlsBayHeight * 1.2
-    static let paneGap: CGFloat = 0
     static let screenBarHeight: CGFloat = windowControlsBayHeight
+    static let addStripThickness: CGFloat = 22
     static let slotCount = 4
     static let topRevealHeight: CGFloat = 32
     static let bottomRevealHeight: CGFloat = 24
     static let revealDelay: TimeInterval = 0.25
     static let hideDelay: TimeInterval = 0.6
-    static let focusBorderWidth: CGFloat = 2.25
+    static let focusBorderWidth: CGFloat = 1.7
 }
 
 extension PresentationMode {
@@ -233,28 +233,25 @@ extension PresentationMode {
 
     func contentSize(
         for orientation: DeviceOrientation,
-        screenCount: Int = 1,
+        footprint: LayoutFootprint = .single,
         scale: CGFloat = 1.0
     ) -> CGSize {
         let scale = max(scale, minimumScale)
-        let resolvedCount = max(1, min(screenCount, CompactLayout.slotCount))
-        let columns = CGFloat(resolvedCount <= 2 ? 1 : 2)
-        let rows = CGFloat(resolvedCount == 1 ? 1 : 2)
-        let gapX = columns > 1 ? CompactLayout.paneGap * scale : 0
-        let gapY = rows > 1 ? CompactLayout.paneGap * scale : 0
+        let width = max(footprint.width, 1)
+        let height = max(footprint.height, 1)
 
         switch self {
         case .device:
             let deviceSize = orientation.deviceSize
             return CGSize(
-                width: deviceSize.width * scale * columns + gapX,
-                height: deviceSize.height * scale * rows + gapY
+                width: deviceSize.width * scale * width,
+                height: deviceSize.height * scale * height
             )
         case .screen:
             let screenSize = orientation.screenSize
             return CGSize(
-                width: screenSize.width * scale * columns + gapX,
-                height: screenSize.height * scale * rows + gapY
+                width: screenSize.width * scale * width,
+                height: screenSize.height * scale * height
             )
         }
     }
@@ -298,21 +295,16 @@ final class PocketModel: ObservableObject {
     @Published var isWebsiteManagerPresented = false
     @Published var isBrowserImportPresented = false
     @Published var isSiteMenuPresented = false
-    @Published var isLayoutMenuPresented = false
+    @Published var isScreenRemovalPresented = false
     @Published var alwaysOnTop: Bool {
         didSet {
             UserDefaults.standard.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)
         }
     }
 
-    @Published var screenLayoutCount: Int {
-        didSet {
-            UserDefaults.standard.set(screenLayoutCount, forKey: Self.screenLayoutCountKey)
-            if focusedSlotIndex >= screenLayoutCount {
-                focusedSlotIndex = max(screenLayoutCount - 1, 0)
-            }
-        }
-    }
+    @Published private(set) var paneLayout: PaneLayout
+    /// A seam drag must not shrink the window when the layout loses a row or column.
+    var keepsWindowSizeForLayoutChange = false
 
     @Published var focusedSlotIndex = 0
     @Published private(set) var slots: [ScreenSlot] = []
@@ -326,11 +318,15 @@ final class PocketModel: ObservableObject {
     private static let orientationKey = "Pocket.orientation"
     private static let alwaysOnTopKey = "Pocket.alwaysOnTop"
     private static let screenLayoutCountKey = "Pocket.screenLayoutCount"
+    private static let paneLayoutKey = "Pocket.paneLayout"
     private static let websitesKey = "Pocket.websites"
     private static let slotsKey = "Pocket.screenSlots"
 
+    var layoutFootprint: LayoutFootprint { paneLayout.footprint }
+
     var visibleSlots: [ScreenSlot] {
-        Array(slots.prefix(max(1, min(screenLayoutCount, slots.count))))
+        let ids = Set(paneLayout.leafIDs)
+        return slots.filter { ids.contains($0.index) }
     }
 
     var openAppIDs: Set<String> {
@@ -376,8 +372,13 @@ final class PocketModel: ObservableObject {
 
         alwaysOnTop = defaults.object(forKey: Self.alwaysOnTopKey) as? Bool ?? true
 
-        let storedLayoutCount = defaults.integer(forKey: Self.screenLayoutCountKey)
-        screenLayoutCount = (1...CompactLayout.slotCount).contains(storedLayoutCount) ? storedLayoutCount : 1
+        if let data = defaults.data(forKey: Self.paneLayoutKey),
+           let stored = try? JSONDecoder().decode(PaneLayout.self, from: data) {
+            paneLayout = stored.sanitized()
+        } else {
+            let storedLayoutCount = defaults.integer(forKey: Self.screenLayoutCountKey)
+            paneLayout = PaneLayout.migrated(fromScreenCount: storedLayoutCount).sanitized()
+        }
 
         let records = Self.loadSlotRecords(from: defaults)
         slots = (0..<CompactLayout.slotCount).map { index in
@@ -407,6 +408,63 @@ final class PocketModel: ObservableObject {
         guard !appIDs.isEmpty else { return }
         for controller in sessionControllers.values where appIDs.contains(controller.app.id) {
             controller.reloadPage()
+        }
+    }
+
+    func split(_ slot: ScreenSlot, at edge: PaneEdge) {
+        guard let newIndex = (0..<CompactLayout.slotCount).first(where: { !paneLayout.leafIDs.contains($0) }),
+              let next = paneLayout.splitting(slot.index, at: edge, newLeaf: newIndex) else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            paneLayout = next
+            focusedSlotIndex = newIndex
+        }
+        persistLayout()
+        DispatchQueue.main.async {
+            self.isSiteMenuPresented = true
+        }
+    }
+
+    func fillGap() {
+        guard let newIndex = (0..<CompactLayout.slotCount).first(where: { !paneLayout.leafIDs.contains($0) }),
+              let next = paneLayout.fillingEmpty(with: newIndex) else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            paneLayout = next
+            focusedSlotIndex = newIndex
+        }
+        persistLayout()
+        DispatchQueue.main.async {
+            self.isSiteMenuPresented = true
+        }
+    }
+
+    func closePane(_ index: Int) {
+        guard let next = paneLayout.closing(index) else { return }
+        let footprintChanged = next.footprint != paneLayout.footprint
+        keepsWindowSizeForLayoutChange = footprintChanged
+        withAnimation(.easeOut(duration: 0.18)) {
+            paneLayout = next
+            if !paneLayout.leafIDs.contains(focusedSlotIndex) {
+                focusedSlotIndex = paneLayout.leafIDs.first ?? 0
+            }
+        }
+        persistLayout()
+        if !footprintChanged {
+            keepsWindowSizeForLayoutChange = false
+        }
+    }
+
+    func updatePaneLayout(_ layout: PaneLayout) {
+        let next = layout.sanitized()
+        guard next != paneLayout else { return }
+        let footprintChanged = next.footprint != paneLayout.footprint
+        keepsWindowSizeForLayoutChange = footprintChanged
+        paneLayout = next
+        if !paneLayout.leafIDs.contains(focusedSlotIndex) {
+            focusedSlotIndex = paneLayout.leafIDs.first ?? 0
+        }
+        persistLayout()
+        if !footprintChanged {
+            keepsWindowSizeForLayoutChange = false
         }
     }
 
@@ -562,6 +620,11 @@ final class PocketModel: ObservableObject {
         guard slotURLs[slot.index] != url else { return }
         slotURLs[slot.index] = url
         persistSlots()
+    }
+
+    private func persistLayout() {
+        guard let data = try? JSONEncoder().encode(paneLayout) else { return }
+        UserDefaults.standard.set(data, forKey: Self.paneLayoutKey)
     }
 
     private func persistSlots() {

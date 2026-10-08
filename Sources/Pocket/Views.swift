@@ -23,7 +23,7 @@ struct AppRootView: View {
                 WindowManager.shared.ensureInitialSize(
                     for: model.presentationMode,
                     orientation: model.orientation,
-                    screenCount: model.screenLayoutCount
+                    footprint: model.layoutFootprint
                 )
             }
             .frame(width: 1, height: 1)
@@ -33,7 +33,7 @@ struct AppRootView: View {
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: model.orientation,
-                screenCount: model.screenLayoutCount,
+                footprint: model.layoutFootprint,
                 animated: false
             )
         }
@@ -42,7 +42,7 @@ struct AppRootView: View {
             WindowManager.shared.restoreSize(
                 for: newMode,
                 orientation: model.orientation,
-                screenCount: model.screenLayoutCount,
+                footprint: model.layoutFootprint,
                 animated: true
             )
         }
@@ -50,16 +50,19 @@ struct AppRootView: View {
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: newOrientation,
-                screenCount: model.screenLayoutCount,
+                footprint: model.layoutFootprint,
                 animated: true
             )
         }
-        .onChange(of: model.screenLayoutCount) { _, newCount in
+        .onChange(of: model.layoutFootprint) { _, newFootprint in
+            let keepSize = model.keepsWindowSizeForLayoutChange
+            model.keepsWindowSizeForLayoutChange = false
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: model.orientation,
-                screenCount: newCount,
-                animated: true
+                footprint: newFootprint,
+                animated: !keepSize,
+                allowShrink: !keepSize
             )
         }
         .onChange(of: model.alwaysOnTop) { _, newValue in
@@ -108,7 +111,7 @@ struct PocketTopChrome: View {
     @ObservedObject private var windowManager = WindowManager.shared
 
     private var shown: Bool {
-        windowManager.isChromeVisible || model.isSiteMenuPresented
+        windowManager.isChromeVisible || model.isSiteMenuPresented || model.isScreenRemovalPresented
     }
 
     var body: some View {
@@ -128,6 +131,19 @@ struct PocketTopChrome: View {
         .background(shown ? Color.pocketChrome : Color.clear)
         .animation(.easeOut(duration: 0.16), value: shown)
         .ignoresSafeArea()
+        .alert(
+            "Remove \(model.activeSlot?.app.title ?? "this screen")?",
+            isPresented: $model.isScreenRemovalPresented
+        ) {
+            Button("Remove", role: .destructive) {
+                if let index = model.activeSlot?.index {
+                    model.closePane(index)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes the selected screen.")
+        }
     }
 }
 
@@ -136,16 +152,13 @@ struct PocketBottomChrome: View {
     @ObservedObject private var windowManager = WindowManager.shared
 
     private var shown: Bool {
-        windowManager.isChromeVisible || model.isLayoutMenuPresented
+        windowManager.isChromeVisible
     }
 
     var body: some View {
         ZStack {
             if shown {
-                CompactControls(
-                    model: model,
-                    isLayoutMenuPresented: $model.isLayoutMenuPresented
-                )
+                CompactControls(model: model)
                 .transition(.opacity)
             }
         }
@@ -164,27 +177,93 @@ struct PocketStageView: View {
     @State private var topHideWork: DispatchWorkItem?
     @State private var bottomShowWork: DispatchWorkItem?
     @State private var bottomHideWork: DispatchWorkItem?
+    @State private var drag = DividerDragBox()
+    @State private var liveLayout: PaneLayout?
 
     var body: some View {
         GeometryReader { proxy in
-            let count = max(model.visibleSlots.count, 1)
-            let availableWidth = max(proxy.size.width, 1)
-            let totalHeight = max(proxy.size.height, 1)
-            let grid = gridMetrics(count: count)
-            let gapX: CGFloat = grid.columns > 1 ? CompactLayout.paneGap : 0
-            let gapY: CGFloat = grid.rows > 1 ? CompactLayout.paneGap : 0
-            let contentSize = CGSize(width: availableWidth, height: totalHeight)
+            let canvas = CGSize(width: max(proxy.size.width, 1), height: max(proxy.size.height, 1))
+            let display = liveLayout ?? model.paneLayout
+            let interaction = drag.session?.start ?? display
+            let frames = display.frames(in: canvas)
 
-            paneGrid(
-                count: count,
-                width: availableWidth,
-                height: totalHeight,
-                columns: grid.columns,
-                rows: grid.rows,
-                gapX: gapX,
-                gapY: gapY
-            )
-            .frame(width: availableWidth, height: totalHeight, alignment: .top)
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .allowsHitTesting(false)
+
+                ForEach(model.slots) { slot in
+                    if let frame = frames[slot.index] {
+                        ScreenPane(
+                            model: model,
+                            slot: slot,
+                            controller: slot.controller,
+                            isFocused: slot.index == model.activeSlot?.index,
+                            showsFocusBorder: display.leafCount > 1 && chromeShown
+                        )
+                        .frame(width: frame.width, height: frame.height)
+                        .offset(x: frame.minX, y: frame.minY)
+                    }
+                }
+
+                ForEach(display.dividers(in: canvas)) { divider in
+                    Rectangle()
+                        .fill(Color.white.opacity(0.22))
+                        .frame(
+                            width: divider.axis == .horizontal ? divider.bounds.width : 1,
+                            height: divider.axis == .horizontal ? 1 : divider.bounds.height
+                        )
+                        .offset(
+                            x: divider.axis == .horizontal ? divider.bounds.minX : divider.splitPosition - 0.5,
+                            y: divider.axis == .horizontal ? divider.splitPosition - 0.5 : divider.bounds.minY
+                        )
+                        .allowsHitTesting(false)
+                }
+
+                PaneSeamOverlay(seams: interaction.dividers(in: canvas)) { seam, point in
+                    let session: DividerDragSession
+                    if let existing = drag.session {
+                        session = existing
+                    } else {
+                        let cross = seam.axis == .horizontal ? point.x : point.y
+                        session = DividerDragSession(
+                            divider: seam,
+                            start: model.paneLayout,
+                            cross: cross,
+                            canvas: canvas
+                        )
+                        drag.session = session
+                    }
+                    liveLayout = session.preview(at: point)
+                } onEnded: { _, point in
+                    if let session = drag.session {
+                        model.updatePaneLayout(session.preview(at: point))
+                    }
+                    drag.session = nil
+                    liveLayout = nil
+                }
+                .frame(width: canvas.width, height: canvas.height)
+
+                if drag.session == nil {
+                    ForEach(Array(display.gaps(in: canvas).enumerated()), id: \.offset) { _, gap in
+                        Color.black
+                            .frame(width: gap.width, height: gap.height)
+                            .offset(x: gap.minX, y: gap.minY)
+                            .allowsHitTesting(false)
+                    }
+                    if chromeShown {
+                        let gapStrips = display.gapStrips(in: canvas)
+                        ForEach(gapStrips) { strip in
+                            PocketAddStripButton(help: strip.help, corners: .square) {
+                                model.fillGap()
+                            }
+                            .frame(width: strip.rect.width, height: strip.rect.height)
+                            .offset(x: strip.rect.minX, y: strip.rect.minY)
+                        }
+                    }
+                }
+            }
+            .frame(width: canvas.width, height: canvas.height, alignment: .topLeading)
+            .clipped()
             .background(model.presentationMode == .screen ? Color.black : Color.clear)
             .overlay {
                 HoverTrackingView(
@@ -203,7 +282,7 @@ struct PocketStageView: View {
                         scheduleShow(top: false)
                     },
                     onMouseDown: { point in
-                        focusPane(at: point, contentSize: contentSize, count: count)
+                        focusPane(at: point, in: canvas)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -221,11 +300,12 @@ struct PocketStageView: View {
     }
 
     private var chromeShown: Bool {
-        topBarVisible || bottomBarVisible || model.isSiteMenuPresented || model.isLayoutMenuPresented
+        topBarVisible || bottomBarVisible || model.isSiteMenuPresented || model.isScreenRemovalPresented
     }
 
-    private func focusPane(at point: CGPoint, contentSize: CGSize, count: Int) {
-        guard let index = slotIndex(at: point, size: contentSize, count: count) else { return }
+    private func focusPane(at point: CGPoint, in canvas: CGSize) {
+        let layout = liveLayout ?? model.paneLayout
+        guard let index = layout.leafID(at: point, in: canvas) else { return }
         guard model.focusedSlotIndex != index else { return }
         model.focusedSlotIndex = index
     }
@@ -266,7 +346,6 @@ struct PocketStageView: View {
             return
         }
         if top, model.isSiteMenuPresented { return }
-        if !top, model.isLayoutMenuPresented { return }
 
         let pending = top ? topHideWork : bottomHideWork
         guard pending == nil else { return }
@@ -313,105 +392,430 @@ struct PocketStageView: View {
         }
     }
 
-    @ViewBuilder
-    private func paneGrid(
-        count: Int,
-        width: CGFloat,
-        height: CGFloat,
-        columns: Int,
-        rows: Int,
-        gapX: CGFloat,
-        gapY: CGFloat
-    ) -> some View {
-        VStack(spacing: gapY) {
-            ForEach(0..<rows, id: \.self) { row in
-                HStack(spacing: gapX) {
-                    ForEach(0..<columns, id: \.self) { column in
-                        let paneWidth = paneLength(
-                            index: column,
-                            count: columns,
-                            total: width,
-                            gap: gapX
-                        )
-                        let paneHeight = paneLength(
-                            index: row,
-                            count: rows,
-                            total: height,
-                            gap: gapY
-                        )
-                        if let slot = slot(row: row, column: column, count: count) {
-                            ScreenPane(
-                                model: model,
-                                slot: slot,
-                                isFocused: slot.index == model.activeSlot?.index,
-                                showsFocusBorder: count > 1 && chromeShown
-                            )
-                            .frame(width: paneWidth, height: paneHeight)
-                        } else {
-                            Color.clear
-                                .frame(width: paneWidth, height: paneHeight)
-                        }
+}
+
+private final class DividerDragBox {
+    var session: DividerDragSession?
+}
+
+struct PocketRightAddStrips: View {
+    @ObservedObject var model: PocketModel
+
+    var body: some View {
+        GeometryReader { proxy in
+            let strips = stripFrames(in: proxy.size)
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(strips.enumerated()), id: \.element.id) { index, strip in
+                    PocketAddStripButton(
+                        help: "Add a screen to the right",
+                        corners: .verticalPair(index: index, count: strips.count)
+                    ) {
+                        guard let slot = model.slots.first(where: { $0.index == strip.id }) else { return }
+                        model.split(slot, at: .trailing)
                     }
+                    .frame(width: proxy.size.width, height: strip.rect.height)
+                    .offset(y: strip.rect.minY)
                 }
             }
         }
-        .frame(width: width, height: height, alignment: .topLeading)
     }
 
-    private func gridMetrics(count: Int) -> (columns: Int, rows: Int) {
-        let columns = count <= 2 ? 1 : 2
-        let rows = count == 1 ? 1 : 2
-        return (columns, rows)
-    }
-
-    private func paneLength(index: Int, count: Int, total: CGFloat, gap: CGFloat) -> CGFloat {
-        let available = max(total - gap * CGFloat(max(count - 1, 0)), 1)
-        let base = floor(available / CGFloat(count))
-        if index == count - 1 {
-            return available - base * CGFloat(count - 1)
+    /// One rail beside the only screen, or one strip beside each screen when
+    /// they are stacked and nothing sits to their right.
+    private func stripFrames(in size: CGSize) -> [(id: Int, rect: CGRect)] {
+        let layout = model.paneLayout
+        guard layout.root.gridSpan.columns == 1, size.height > 1 else { return [] }
+        if layout.leafCount == 1, let id = layout.leafIDs.first {
+            return [(id: id, rect: CGRect(x: 0, y: 0, width: 1, height: size.height))]
         }
-        return base
-    }
-
-    private func slot(row: Int, column: Int, count: Int) -> ScreenSlot? {
-        let index = column == 0 ? row : 2 + row
-        guard index < count else { return nil }
-        return model.slots.first { $0.index == index }
-    }
-
-    private func slotIndex(at point: CGPoint, size: CGSize, count: Int) -> Int? {
-        let grid = gridMetrics(count: count)
-        let gapX: CGFloat = grid.columns > 1 ? CompactLayout.paneGap : 0
-        let gapY: CGFloat = grid.rows > 1 ? CompactLayout.paneGap : 0
-        guard let column = paneIndex(at: point.x, count: grid.columns, total: size.width, gap: gapX),
-              let row = paneIndex(at: point.y, count: grid.rows, total: size.height, gap: gapY)
-        else {
-            return nil
+        guard layout.root.gridSpan.rows > 1 else { return [] }
+        let frames = layout.frames(in: CGSize(width: 1000, height: size.height))
+        let panes = frames
+            .map { (id: $0.key, rect: $0.value) }
+            .sorted { $0.rect.minY < $1.rect.minY }
+        return panes.map { pane in
+            (id: pane.id, rect: CGRect(x: 0, y: pane.rect.minY, width: 1, height: max(pane.rect.height, 1)))
         }
-
-        let index = column == 0 ? row : 2 + row
-        guard index < count else { return nil }
-        return index
     }
+}
 
-    private func paneIndex(at position: CGFloat, count: Int, total: CGFloat, gap: CGFloat) -> Int? {
-        var origin: CGFloat = 0
-        for index in 0..<count {
-            let length = paneLength(index: index, count: count, total: total, gap: gap)
-            if position >= origin && position < origin + length {
-                return index
+struct PocketBottomAddStrips: View {
+    @ObservedObject var model: PocketModel
+
+    var body: some View {
+        GeometryReader { proxy in
+            let strips = stripFrames(in: proxy.size.width)
+            ZStack(alignment: .topLeading) {
+                Color.pocketChrome
+                ForEach(strips, id: \.id) { strip in
+                    PocketAddStripButton(
+                        help: "Add a screen below",
+                        corners: .square
+                    ) {
+                        guard let slot = model.slots.first(where: { $0.index == strip.id }) else { return }
+                        model.split(slot, at: .bottom)
+                    }
+                    .frame(width: strip.rect.width, height: proxy.size.height)
+                    .offset(x: strip.rect.minX)
+                }
             }
-            origin += length + gap
         }
-        return nil
+    }
+
+    /// One strip under each screen when nothing is stacked below them.
+    private func stripFrames(in width: CGFloat) -> [(id: Int, rect: CGRect)] {
+        let layout = model.paneLayout
+        guard layout.root.gridSpan.rows == 1, width > 1 else { return [] }
+        let frames = layout.frames(in: CGSize(width: width, height: 1000))
+        let panes = frames
+            .map { (id: $0.key, rect: $0.value) }
+            .sorted { $0.rect.minX < $1.rect.minX }
+        return panes.map { pane in
+            (id: pane.id, rect: CGRect(x: pane.rect.minX, y: 0, width: max(pane.rect.width, 1), height: 1))
+        }
+    }
+}
+
+struct StripCorners: Equatable {
+    var topLeading: CGFloat
+    var topTrailing: CGFloat
+    var bottomLeading: CGFloat
+    var bottomTrailing: CGFloat
+
+    static let square = StripCorners(topLeading: 0, topTrailing: 0, bottomLeading: 0, bottomTrailing: 0)
+
+    static func uniform(_ radius: CGFloat) -> StripCorners {
+        StripCorners(
+            topLeading: radius,
+            topTrailing: radius,
+            bottomLeading: radius,
+            bottomTrailing: radius
+        )
+    }
+
+    static func horizontalPair(index: Int, count: Int, radius: CGFloat = 8) -> StripCorners {
+        guard count > 1 else { return .uniform(radius) }
+        if index == 0 {
+            return StripCorners(topLeading: radius, topTrailing: 0, bottomLeading: radius, bottomTrailing: 0)
+        }
+        if index == count - 1 {
+            return StripCorners(topLeading: 0, topTrailing: radius, bottomLeading: 0, bottomTrailing: radius)
+        }
+        return .square
+    }
+
+    /// The side facing the screen stays square so the strip sits against that edge.
+    static func verticalPair(index: Int, count: Int, radius: CGFloat = 10) -> StripCorners {
+        if count <= 1 {
+            return StripCorners(topLeading: 0, topTrailing: radius, bottomLeading: 0, bottomTrailing: radius)
+        }
+        if index == 0 {
+            return StripCorners(topLeading: 0, topTrailing: radius, bottomLeading: 0, bottomTrailing: 0)
+        }
+        if index == count - 1 {
+            return StripCorners(topLeading: 0, topTrailing: 0, bottomLeading: 0, bottomTrailing: radius)
+        }
+        return .square
+    }
+
+    fileprivate var shape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: topLeading,
+            bottomLeadingRadius: bottomLeading,
+            bottomTrailingRadius: bottomTrailing,
+            topTrailingRadius: topTrailing,
+            style: .continuous
+        )
+    }
+}
+
+private struct PocketAddStripButton: View {
+    var help: String
+    var corners: StripCorners = .uniform(8)
+    var action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                corners.shape
+                    .fill(Color.pocketChrome)
+                corners.shape
+                    .strokeBorder(Color.white.opacity(hovering ? 0.28 : 0.16), lineWidth: 1)
+                ZStack {
+                    Circle()
+                        .fill(hovering ? Color.white : Color.white.opacity(0.08))
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(hovering ? Color.black.opacity(0.88) : Color.white.opacity(0.92))
+                }
+                .frame(width: 20, height: 20)
+                .scaleEffect(hovering ? 1.08 : 1)
+            }
+            .animation(.easeOut(duration: 0.14), value: hovering)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .background {
+                StripHoverProbe(hovering: $hovering)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+}
+
+private struct StripHoverProbe: NSViewRepresentable {
+    @Binding var hovering: Bool
+
+    func makeNSView(context: Context) -> StripHoverProbeView {
+        let view = StripHoverProbeView()
+        view.onChange = { hovering = $0 }
+        return view
+    }
+
+    func updateNSView(_ nsView: StripHoverProbeView, context: Context) {
+        nsView.onChange = { hovering = $0 }
+    }
+}
+
+private final class StripHoverProbeView: NSView {
+    var onChange: ((Bool) -> Void)?
+    private var monitor: Any?
+    private var hovering = false
+
+    deinit {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+        guard window != nil else {
+            setHovering(false)
+            return
+        }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged]) { [weak self] event in
+            self?.track(event)
+            return event
+        }
+        track(nil)
+    }
+
+    private func track(_ event: NSEvent?) {
+        guard let window else {
+            setHovering(false)
+            return
+        }
+        let location = event?.locationInWindow ?? window.mouseLocationOutsideOfEventStream
+        guard event == nil || event?.window === window else {
+            setHovering(false)
+            return
+        }
+        let local = convert(location, from: nil)
+        setHovering(bounds.contains(local))
+    }
+
+    private func setHovering(_ value: Bool) {
+        guard hovering != value else { return }
+        hovering = value
+        onChange?(value)
+    }
+}
+
+final class PocketStripHost<Content: View>: NSHostingView<Content> {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+private struct PaneSeamOverlay: NSViewRepresentable {
+    var seams: [PaneDivider]
+    var onChanged: (PaneDivider, CGPoint) -> Void
+    var onEnded: (PaneDivider, CGPoint) -> Void
+
+    func makeNSView(context: Context) -> PaneSeamOverlayView {
+        let view = PaneSeamOverlayView()
+        view.seams = seams
+        view.onChanged = onChanged
+        view.onEnded = onEnded
+        return view
+    }
+
+    func updateNSView(_ nsView: PaneSeamOverlayView, context: Context) {
+        if !nsView.isDragging, nsView.seams != seams {
+            nsView.seams = seams
+            nsView.refreshTracking()
+        }
+        nsView.onChanged = onChanged
+        nsView.onEnded = onEnded
+    }
+}
+
+private final class PaneSeamOverlayView: NSView {
+    var seams: [PaneDivider] = []
+    var onChanged: ((PaneDivider, CGPoint) -> Void)?
+    var onEnded: ((PaneDivider, CGPoint) -> Void)?
+    var isDragging = false
+    private var activeSeam: PaneDivider?
+    private var isRefreshingTracking = false
+    private var trackedBounds: CGRect = .zero
+
+    override var isOpaque: Bool { false }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("PaneSeamOverlayView is created in code")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = convert(point, from: superview)
+        guard bounds.contains(local), seam(at: stagePoint(fromLocal: local)) != nil else { return nil }
+        return self
+    }
+
+    override func layout() {
+        super.layout()
+        guard bounds != trackedBounds else { return }
+        trackedBounds = bounds
+        refreshTracking()
+    }
+
+    override func resetCursorRects() {
+        for seam in seams {
+            addCursorRect(viewRect(for: seam.hitRect), cursor: resizeCursor(for: seam))
+        }
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        refreshTracking()
+    }
+
+    func refreshTracking() {
+        guard !isRefreshingTracking else { return }
+        isRefreshingTracking = true
+        defer { isRefreshingTracking = false }
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        for seam in seams {
+            let area = NSTrackingArea(
+                rect: viewRect(for: seam.hitRect),
+                options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeAlways],
+                owner: self,
+                userInfo: ["seam": seam.id]
+            )
+            addTrackingArea(area)
+        }
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        showResizeCursor(for: event)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        showResizeCursor(for: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        showResizeCursor(for: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard !isDragging else { return }
+        NSCursor.arrow.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = stagePoint(from: event)
+        guard let seam = seam(at: point) else { return }
+        isDragging = true
+        activeSeam = seam
+        resizeCursor(for: seam).set()
+        onChanged?(seam, point)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard isDragging, let seam = activeSeam else { return }
+        resizeCursor(for: seam).set()
+        onChanged?(seam, stagePoint(from: event))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard isDragging, let seam = activeSeam else { return }
+        isDragging = false
+        activeSeam = nil
+        onEnded?(seam, stagePoint(from: event))
+    }
+
+    private func showResizeCursor(for event: NSEvent) {
+        guard let seam = seam(at: stagePoint(from: event)) else { return }
+        let cursor = resizeCursor(for: seam)
+        cursor.set()
+        // Web content sets its own cursor during the same mouse move. Reapply
+        // after that so the resize arrow wins while the pointer stays on the seam.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            let local = self.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            guard let seam = self.seam(at: self.stagePoint(fromLocal: local)) else { return }
+            self.resizeCursor(for: seam).set()
+        }
+    }
+
+    private func resizeCursor(for seam: PaneDivider) -> NSCursor {
+        seam.axis == .horizontal ? .resizeUpDown : .resizeLeftRight
+    }
+
+    private func seam(at point: CGPoint) -> PaneDivider? {
+        seams.first { $0.hitRect.contains(point) }
+    }
+
+    private func stagePoint(from event: NSEvent) -> CGPoint {
+        stagePoint(fromLocal: convert(event.locationInWindow, from: nil))
+    }
+
+    private func stagePoint(fromLocal local: NSPoint) -> CGPoint {
+        if isFlipped {
+            return CGPoint(x: local.x, y: local.y)
+        }
+        return CGPoint(x: local.x, y: bounds.height - local.y)
+    }
+
+    private func viewRect(for stage: CGRect) -> NSRect {
+        if isFlipped {
+            return NSRect(x: stage.minX, y: stage.minY, width: stage.width, height: stage.height)
+        }
+        return NSRect(
+            x: stage.minX,
+            y: bounds.height - stage.maxY,
+            width: stage.width,
+            height: stage.height
+        )
     }
 }
 
 private struct ScreenPane: View {
     @ObservedObject var model: PocketModel
     @ObservedObject var slot: ScreenSlot
+    @ObservedObject var controller: WebViewController
     var isFocused: Bool
     var showsFocusBorder: Bool
+
+    private var focusBorderColor: Color {
+        controller.pageUsesDarkBackground ? Color.white.opacity(0.82) : Color.black.opacity(0.5)
+    }
 
     var body: some View {
         Group {
@@ -427,10 +831,11 @@ private struct ScreenPane: View {
         .clipped()
         .overlay {
             Rectangle()
-                .strokeBorder(slot.app.tint, lineWidth: CompactLayout.focusBorderWidth)
+                .strokeBorder(focusBorderColor, lineWidth: CompactLayout.focusBorderWidth)
                 .opacity(showsFocusBorder && isFocused ? 1 : 0)
                 .animation(.easeOut(duration: 0.16), value: isFocused)
                 .animation(.easeOut(duration: 0.16), value: showsFocusBorder)
+                .animation(.easeOut(duration: 0.16), value: controller.pageUsesDarkBackground)
                 .allowsHitTesting(false)
         }
     }
@@ -492,7 +897,6 @@ private struct WindowTrafficLights: View {
 
 struct CompactControls: View {
     @ObservedObject var model: PocketModel
-    @Binding var isLayoutMenuPresented: Bool
     @State private var isOrientationHovering = false
 
     private static let orientationHoverText = "Cmd + 1 - Portrait, Cmd + 2 - Landscape"
@@ -515,12 +919,6 @@ struct CompactControls: View {
                 model.orientation = model.orientation == .portrait ? .landscape : .portrait
             }
             .onHover { isOrientationHovering = $0 }
-
-            CompactLayoutMenu(
-                model: model,
-                showsTitle: showsTitles,
-                isPresented: $isLayoutMenuPresented
-            )
 
             CompactChromeButton(
                 symbol: model.alwaysOnTop ? "pin.fill" : "pin",
@@ -670,9 +1068,34 @@ private struct ScreenNavigationControls: View {
 
             Spacer(minLength: 8)
 
-            CompactSiteSwitcher(model: model, slot: slot, isPresented: $isSiteMenuPresented)
-                .layoutPriority(1)
-                .frame(minWidth: 0, alignment: .trailing)
+            HStack(spacing: 8) {
+                if model.paneLayout.leafCount > 1 {
+                    Button {
+                        model.focusedSlotIndex = slot.index
+                        model.isScreenRemovalPresented = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.9))
+                            .frame(width: 28, height: 28)
+                            .background {
+                                Circle()
+                                    .fill(Color.white.opacity(0.06))
+                            }
+                            .overlay {
+                                Circle()
+                                    .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove screen")
+                    .accessibilityLabel("Remove screen")
+                }
+
+                CompactSiteSwitcher(model: model, slot: slot, isPresented: $isSiteMenuPresented)
+            }
+            .layoutPriority(1)
+            .frame(minWidth: 0, alignment: .trailing)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: CompactLayout.windowControlsBayHeight)
@@ -825,141 +1248,6 @@ private struct CompactHelpModifier: ViewModifier {
     }
 }
 
-private struct CompactLayoutMenu: View {
-    @ObservedObject var model: PocketModel
-    var showsTitle: Bool
-    @Binding var isPresented: Bool
-
-    var body: some View {
-        Button {
-            isPresented = true
-        } label: {
-            CompactChromeLabel(
-                symbol: "square.grid.2x2",
-                title: "Layout",
-                showsTitle: showsTitle,
-                showsChevron: true,
-                chevronPointsUp: isPresented
-            )
-            .padding(.horizontal, isPresented ? 8 : 0)
-            .padding(.vertical, isPresented ? 3 : 0)
-            .background {
-                if isPresented {
-                    Capsule()
-                        .fill(Color.white.opacity(0.08))
-                        .overlay {
-                            Capsule()
-                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
-                        }
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .modifier(CompactHoverTitleModifier(title: "Layout", showsTitle: showsTitle))
-        .accessibilityLabel("Layout")
-        .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
-            CompactScreenLayoutMenu(model: model, isPresented: $isPresented)
-                .presentationBackground {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(red: 0.145, green: 0.155, blue: 0.175))
-                }
-        }
-    }
-}
-
-private struct CompactScreenLayoutMenu: View {
-    @ObservedObject var model: PocketModel
-    @Binding var isPresented: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("SCREENS")
-                .font(.system(size: 11, weight: .semibold))
-                .tracking(1.5)
-                .foregroundStyle(Color.white.opacity(0.42))
-                .padding(.horizontal, 14)
-                .padding(.top, 6)
-                .padding(.bottom, 8)
-
-            ForEach(1...4, id: \.self) { count in
-                CompactScreenLayoutRow(
-                    count: count,
-                    isSelected: model.screenLayoutCount == count
-                ) {
-                    model.screenLayoutCount = count
-                    isPresented = false
-                }
-            }
-        }
-        .padding(.vertical, 8)
-        .frame(width: 210)
-    }
-}
-
-private struct ScreenLayoutIcon: View {
-    let count: Int
-
-    var body: some View {
-        VStack(spacing: 1.5) {
-            HStack(spacing: 1.5) {
-                cell(count >= 1)
-                cell(count >= 3)
-            }
-            HStack(spacing: 1.5) {
-                cell(count >= 2)
-                cell(count >= 4)
-            }
-        }
-    }
-
-    private func cell(_ highlighted: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 1.2, style: .continuous)
-            .fill(Color.white.opacity(highlighted ? 0.92 : 0.22))
-            .frame(width: 6, height: 6)
-    }
-}
-
-private struct CompactScreenLayoutRow: View {
-    let count: Int
-    let isSelected: Bool
-    let action: () -> Void
-    @State private var isHovering = false
-
-    private var title: String {
-        count == 1 ? "1 screen" : "\(count) screens"
-    }
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                ScreenLayoutIcon(count: count)
-                    .frame(width: 18, height: 18)
-
-                Text(title)
-                    .font(.system(size: 14, weight: .medium))
-
-                Spacer(minLength: 12)
-
-                if isSelected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.45, green: 0.84, blue: 0.52))
-                }
-            }
-            .foregroundStyle(Color.white.opacity(0.92))
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isHovering ? Color.white.opacity(0.06) : Color.clear)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 6)
-        .onHover { isHovering = $0 }
-    }
-}
 
 private struct CompactSiteMenu: View {
     @ObservedObject var model: PocketModel

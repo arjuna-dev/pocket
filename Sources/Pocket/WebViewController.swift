@@ -42,13 +42,18 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     @Published private(set) var pageTitle: String
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
+    /// True when the loaded page is dark, so the active edge can stay light.
+    @Published private(set) var pageUsesDarkBackground = true
 
     var onLocationChange: (() -> Void)?
+    private let themeRelay = PageThemeRelay()
 
     private var progressObservation: NSKeyValueObservation?
     private var canGoBackObservation: NSKeyValueObservation?
     private var canGoForwardObservation: NSKeyValueObservation?
     private var urlObservation: NSKeyValueObservation?
+    private var themeSampleGeneration = 0
+    private var themeSampleWork: DispatchWorkItem?
     private static let minimumViewportSize = CGSize(width: 480, height: 300)
 
     init(
@@ -66,6 +71,14 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         )
         configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.preferences.isElementFullscreenEnabled = true
+        configuration.userContentController.add(themeRelay, name: "pocketPageTheme")
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.pageThemeScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
         configuration.userContentController.addUserScript(
             WKUserScript(
                 source: Self.inAppFullscreenScript,
@@ -82,6 +95,7 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         self.webView = webView
 
         super.init()
+        themeRelay.owner = self
 
         webView.onViewportSizeChanged = { [weak self] in
             self?.applyViewportZoom()
@@ -113,6 +127,7 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         canGoBackObservation?.invalidate()
         canGoForwardObservation?.invalidate()
         urlObservation?.invalidate()
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: "pocketPageTheme")
     }
 
     func load() {
@@ -153,6 +168,7 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoading = true
         errorMessage = nil
+        themeSampleGeneration += 1
         applyViewportZoom()
         syncHistoryState()
     }
@@ -163,6 +179,84 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         syncHistoryState()
         applyViewportZoom()
         onLocationChange?()
+        notePageThemeMayHaveChanged()
+        for delay in [1.0, 2.4] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.capturePageTheme(generation: self.themeSampleGeneration)
+            }
+        }
+    }
+
+    func notePageThemeMayHaveChanged() {
+        themeSampleWork?.cancel()
+        let generation = themeSampleGeneration
+        let work = DispatchWorkItem { [weak self] in
+            self?.capturePageTheme(generation: generation)
+        }
+        themeSampleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    /// The border has to contrast with the pixels on the page. WhatsApp keeps a
+    /// light document background behind a dark wallpaper, so a style walk gets
+    /// the color wrong and draws a black edge on a dark screen.
+    private func capturePageTheme(generation: Int) {
+        guard generation == themeSampleGeneration else { return }
+        let bounds = webView.bounds
+        guard bounds.width > 8, bounds.height > 8 else { return }
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = bounds
+        configuration.snapshotWidth = 96
+        configuration.afterScreenUpdates = true
+        webView.takeSnapshot(with: configuration) { [weak self] image, _ in
+            guard let self, generation == self.themeSampleGeneration, let image else { return }
+            guard let dark = Self.edgeIsDark(image) else { return }
+            DispatchQueue.main.async {
+                guard generation == self.themeSampleGeneration else { return }
+                if self.pageUsesDarkBackground != dark {
+                    self.pageUsesDarkBackground = dark
+                }
+            }
+        }
+    }
+
+    private static func edgeIsDark(_ image: NSImage) -> Bool? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        let width = bitmap.pixelsWide
+        let height = bitmap.pixelsHigh
+        guard width > 4, height > 4 else { return nil }
+
+        var brightnesses: [CGFloat] = []
+        let inset = 1
+        func sample(_ x: Int, _ y: Int) {
+            guard x >= 0, y >= 0, x < width, y < height,
+                  let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return }
+            var red: CGFloat = 0
+            var green: CGFloat = 0
+            var blue: CGFloat = 0
+            var alpha: CGFloat = 0
+            color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+            guard alpha > 0.4 else { return }
+            brightnesses.append((red * 299 + green * 587 + blue * 114) / 1000)
+        }
+
+        let columns = 18
+        let rows = 18
+        for index in 0..<columns {
+            let x = inset + (width - 1 - inset * 2) * index / max(columns - 1, 1)
+            sample(x, inset)
+            sample(x, height - 1 - inset)
+        }
+        for index in 1..<(rows - 1) {
+            let y = inset + (height - 1 - inset * 2) * index / max(rows - 1, 1)
+            sample(inset, y)
+            sample(width - 1 - inset, y)
+        }
+        guard brightnesses.count >= 8 else { return nil }
+        brightnesses.sort()
+        return brightnesses[brightnesses.count / 2] < 0.62
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -224,6 +318,99 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         canGoBack = webView.canGoBack
         canGoForward = webView.canGoForward
     }
+
+    private static let pageThemeScript = #"""
+    (() => {
+        const opaque = (color) => {
+            const match = String(color).match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/);
+            if (!match) return null;
+            const alpha = match[4] == null ? 1 : Number(match[4]);
+            if (!(alpha > 0.35)) return null;
+            const brightness = (Number(match[1]) * 299 + Number(match[2]) * 587 + Number(match[3]) * 114) / 1000;
+            return brightness < 148;
+        };
+
+        const backgroundIsDark = (element) => {
+            let node = element;
+            while (node && node.nodeType === 1) {
+                const dark = opaque(getComputedStyle(node).backgroundColor);
+                if (dark != null) return dark;
+                node = node.parentElement;
+            }
+            return null;
+        };
+
+        const sample = () => {
+            const width = window.innerWidth || 0;
+            const height = window.innerHeight || 0;
+            const points = [
+                [width * 0.5, height * 0.5],
+                [width * 0.18, height * 0.18],
+                [width * 0.82, height * 0.18],
+                [width * 0.18, height * 0.82],
+                [width * 0.82, height * 0.82]
+            ];
+            let dark = 0;
+            let light = 0;
+            for (const [x, y] of points) {
+                const hit = document.elementFromPoint(Math.max(1, x), Math.max(1, y));
+                const value = backgroundIsDark(hit);
+                if (value === true) dark += 1;
+                else if (value === false) light += 1;
+            }
+            if (dark + light === 0) {
+                const scheme = getComputedStyle(document.documentElement).colorScheme || "";
+                if (scheme.includes("light") && !scheme.includes("dark")) return "light";
+                if (scheme.includes("dark")) return "dark";
+                return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+            }
+            return dark >= light ? "dark" : "light";
+        };
+
+        let last = "";
+        let timer = 0;
+        const report = () => {
+            let theme = "dark";
+            try { theme = sample(); } catch (_) {}
+            if (theme === last) return;
+            last = theme;
+            try { window.webkit.messageHandlers.pocketPageTheme.postMessage(theme); } catch (_) {}
+        };
+        const schedule = () => {
+            window.clearTimeout(timer);
+            timer = window.setTimeout(report, 120);
+        };
+
+        window.__pocketSamplePageTheme = () => {
+            try { return sample(); } catch (_) { return "dark"; }
+        };
+
+        const watch = () => {
+            report();
+            const observer = new MutationObserver(schedule);
+            observer.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ["class", "style", "data-theme", "data-color-mode"]
+            });
+            if (document.body) {
+                observer.observe(document.body, {
+                    attributes: true,
+                    attributeFilter: ["class", "style"]
+                });
+            }
+            const media = window.matchMedia("(prefers-color-scheme: dark)");
+            if (media.addEventListener) media.addEventListener("change", schedule);
+        };
+
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", watch, { once: true });
+        } else {
+            watch();
+        }
+        window.setTimeout(schedule, 400);
+        window.setTimeout(schedule, 1400);
+    })();
+    """#
 
     private static let inAppFullscreenScript = #"""
     (() => {
@@ -474,7 +661,21 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
                     }
                 }
             }
-        }, true);
+        },         true);
     })();
     """#
+}
+
+private final class PageThemeRelay: NSObject, WKScriptMessageHandler {
+    weak var owner: WebViewController?
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard message.body is String else { return }
+        DispatchQueue.main.async { [weak owner] in
+            owner?.notePageThemeMayHaveChanged()
+        }
+    }
 }

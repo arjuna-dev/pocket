@@ -18,6 +18,11 @@ final class PocketPanel: NSPanel {
     }
 }
 
+private func prepareChromeHost<Content: View>(_ host: NSHostingView<Content>) {
+    host.sizingOptions = []
+    host.safeAreaRegions = []
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: PocketPanel?
 
@@ -31,12 +36,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let screenHost = NSHostingView(rootView: AppRootView(model: model))
         let topHost = NSHostingView(rootView: PocketTopChrome(model: model))
         let bottomHost = NSHostingView(rootView: PocketBottomChrome(model: model))
-        screenHost.sizingOptions = []
-        topHost.sizingOptions = []
-        bottomHost.sizingOptions = []
-        screenHost.safeAreaRegions = []
-        topHost.safeAreaRegions = []
-        bottomHost.safeAreaRegions = []
+        let rightAddHost = PocketStripHost(rootView: PocketRightAddStrips(model: model))
+        let bottomAddHost = PocketStripHost(rootView: PocketBottomAddStrips(model: model))
+        prepareChromeHost(screenHost)
+        prepareChromeHost(topHost)
+        prepareChromeHost(bottomHost)
+        prepareChromeHost(rightAddHost)
+        prepareChromeHost(bottomAddHost)
         let panel = PocketPanel(
             contentRect: NSRect(x: 0, y: 0, width: 344, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable,
@@ -50,7 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.contentView = PocketChromeContainer(
             screenHost: screenHost,
             topHost: topHost,
-            bottomHost: bottomHost
+            bottomHost: bottomHost,
+            rightAddHost: rightAddHost,
+            bottomAddHost: bottomAddHost
         )
         self.panel = panel
 
@@ -59,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowManager.shared.restoreSize(
             for: model.presentationMode,
             orientation: model.orientation,
-            screenCount: model.screenLayoutCount,
+            footprint: model.layoutFootprint,
             animated: false
         )
         panel.center()
