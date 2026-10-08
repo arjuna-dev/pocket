@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "skills": {
+    "appkit-accessibility-auditor": {
+      "source": "rgmez/apple-accessibility-skills",
+      "sourceType": "github",
+      "skillPath": "skills/appkit-accessibility-auditor/SKILL.md",
+      "computedHash": "8d62ddf9cfde38a85a1d14bd359e7136e60a0dd4548a4d91f87772941dae60c7"
+    },
+    "swift-concurrency": {
+      "source": "AvdLee/Swift-Concurrency-Agent-Skill",
+      "sourceType": "github",
+      "skillPath": "skills/swift-concurrency/SKILL.md",
+      "computedHash": "49e4df69412710a0ca320c21a9d26cf4abb6d2c553960cffaceea5a09e3be792"
+    },
+    "swiftui-accessibility-auditor": {
+      "source": "rgmez/apple-accessibility-skills",
+      "sourceType": "github",
+      "skillPath": "skills/swiftui-accessibility-auditor/SKILL.md",
+      "computedHash": "d74db2cb9cb4543e8530c95d448d86f08498637ffec1d5bf70d7ccc3870a91ec"
+    },
+    "swiftui-view-refactor": {
+      "source": "Dimillian/Skills",
+      "sourceType": "github",
+      "skillPath": "swiftui-view-refactor/SKILL.md",
+      "computedHash": "eefd3e1e72a17ca627f8e50fce173efafaa23eb66515f562f4b5fca88325cb33"
+    }
+  }
+}
