@@ -5,6 +5,9 @@ final class WindowManager: ObservableObject {
     static let shared = WindowManager()
 
     @Published private(set) var isChromeVisible = false
+    /// Keyboard focus inside a faded bar keeps the chrome visible so the focus ring can be seen.
+    @Published private(set) var accessibilityFocusKeepsChrome = false
+    private var chromeFocusSources: Set<String> = []
 
     private weak var window: NSWindow?
     private var alwaysOnTop = false
@@ -152,7 +155,18 @@ final class WindowManager: ObservableObject {
         }
         syncAddStripContainer(screen: screen)
         let newFrame = clampedToVisibleScreen(window.frameRect(forContentRect: newContent), window: window)
-        window.setFrame(newFrame, display: true, animate: true)
+        window.setFrame(newFrame, display: true, animate: !PocketMotion.reduceMotion)
+    }
+
+    func setChromeFocused(_ focused: Bool, source: String) {
+        if focused {
+            chromeFocusSources.insert(source)
+        } else {
+            chromeFocusSources.remove(source)
+        }
+        let keeps = !chromeFocusSources.isEmpty
+        guard accessibilityFocusKeepsChrome != keeps else { return }
+        accessibilityFocusKeepsChrome = keeps
     }
 
     private func windowContentSize(for screen: CGSize) -> CGSize {

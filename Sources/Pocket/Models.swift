@@ -414,7 +414,7 @@ final class PocketModel: ObservableObject {
     func split(_ slot: ScreenSlot, at edge: PaneEdge) {
         guard let newIndex = (0..<CompactLayout.slotCount).first(where: { !paneLayout.leafIDs.contains($0) }),
               let next = paneLayout.splitting(slot.index, at: edge, newLeaf: newIndex) else { return }
-        withAnimation(.easeOut(duration: 0.18)) {
+        withAnimation(PocketMotion.fade(duration: 0.18)) {
             paneLayout = next
             focusedSlotIndex = newIndex
         }
@@ -427,7 +427,7 @@ final class PocketModel: ObservableObject {
     func fillGap() {
         guard let newIndex = (0..<CompactLayout.slotCount).first(where: { !paneLayout.leafIDs.contains($0) }),
               let next = paneLayout.fillingEmpty(with: newIndex) else { return }
-        withAnimation(.easeOut(duration: 0.18)) {
+        withAnimation(PocketMotion.fade(duration: 0.18)) {
             paneLayout = next
             focusedSlotIndex = newIndex
         }
@@ -441,7 +441,7 @@ final class PocketModel: ObservableObject {
         guard let next = paneLayout.closing(index) else { return }
         let footprintChanged = next.footprint != paneLayout.footprint
         keepsWindowSizeForLayoutChange = footprintChanged
-        withAnimation(.easeOut(duration: 0.18)) {
+        withAnimation(PocketMotion.fade(duration: 0.18)) {
             paneLayout = next
             if !paneLayout.leafIDs.contains(focusedSlotIndex) {
                 focusedSlotIndex = paneLayout.leafIDs.first ?? 0
