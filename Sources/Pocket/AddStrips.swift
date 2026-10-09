@@ -14,8 +14,8 @@ struct PocketRightAddStrips: View {
                         help: "Add a screen to the right",
                         corners: .verticalPair(index: index, count: strips.count)
                     ) {
-                        guard let slot = model.slots.first(where: { $0.index == strip.id }) else { return }
-                        model.split(slot, at: .trailing)
+                        let stacked = model.paneLayout.root.gridSpan.rows > 1
+                        model.showScreenCount(stacked ? 4 : 2)
                     }
                     .frame(width: proxy.size.width, height: strip.rect.height)
                     .offset(y: strip.rect.minY)
@@ -56,8 +56,7 @@ struct PocketBottomAddStrips: View {
                         help: "Add a screen below",
                         corners: .square
                     ) {
-                        guard let slot = model.slots.first(where: { $0.index == strip.id }) else { return }
-                        model.split(slot, at: .bottom)
+                        model.showScreenCount(4)
                     }
                     .frame(width: strip.rect.width, height: proxy.size.height)
                     .offset(x: strip.rect.minX)
@@ -130,6 +129,37 @@ struct StripCorners: Equatable {
             topTrailingRadius: topTrailing,
             style: .continuous
         )
+    }
+}
+
+struct EmptyCellAddButton: View {
+    var action: () -> Void
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(hovering ? Color.white : Color.white.opacity(0.1))
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(hovering ? Color.black.opacity(0.88) : Color.white.opacity(0.92))
+                }
+                .frame(width: 36, height: 36)
+                Text("Add a website")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(hovering ? 0.96 : 0.78))
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .animation(PocketMotion.fade(reduceMotion, duration: 0.14), value: hovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Add a website")
+        .chromeControl(label: "Add a website", hint: "Opens the website list")
     }
 }
 

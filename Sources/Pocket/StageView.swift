@@ -81,20 +81,14 @@ struct PocketStageView: View {
 
                 if drag.session == nil {
                     ForEach(Array(display.gaps(in: canvas).enumerated()), id: \.offset) { _, gap in
-                        Color.black
-                            .frame(width: gap.width, height: gap.height)
-                            .offset(x: gap.minX, y: gap.minY)
-                            .allowsHitTesting(false)
-                    }
-                    let gapStrips = display.gapStrips(in: canvas)
-                    ForEach(gapStrips) { strip in
-                        PocketAddStripButton(help: strip.help, corners: .square) {
-                            model.fillGap()
+                        ZStack {
+                            Color.black
+                            EmptyCellAddButton {
+                                model.chooseSiteForEmptyCell()
+                            }
                         }
-                        .pocketFade(chromeShown)
-                        .animation(PocketMotion.fade(reduceMotion), value: chromeShown)
-                        .frame(width: strip.rect.width, height: strip.rect.height)
-                        .offset(x: strip.rect.minX, y: strip.rect.minY)
+                        .frame(width: gap.width, height: gap.height)
+                        .offset(x: gap.minX, y: gap.minY)
                     }
                 }
             }

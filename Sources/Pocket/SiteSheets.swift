@@ -25,35 +25,16 @@ private enum WebsiteEditorTarget: Identifiable {
 
 struct WebsiteManagerSheet: View {
     @ObservedObject var model: PocketModel
-    @Environment(\.dismiss) private var dismiss
+    var showsHeading = true
     @State private var editorTarget: WebsiteEditorTarget?
     @State private var websitePendingRemoval: SimulatedApp?
     @State private var isBrowserImportPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Websites")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-
-                    Text("Choose what appears in Pocket's app switcher.")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.pocketMuted)
-                }
-
-                Spacer()
-
-                Button {
-                    editorTarget = .new
-                } label: {
-                    Label("Add Website", systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
+            WebsiteManagerHeader(websiteCount: model.websites.count, showsHeading: showsHeading) {
+                editorTarget = .new
             }
-            .padding(.bottom, 12)
 
             ScrollView {
                 LazyVStack(spacing: 8) {
@@ -67,34 +48,21 @@ struct WebsiteManagerSheet: View {
                         )
                     }
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
             }
             .scrollIndicators(.visible)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            HStack(alignment: .center, spacing: 12) {
-                Button {
-                    isBrowserImportPresented = true
-                } label: {
-                    Text(BrowserSessionImporter.websitesButtonTitle())
-                        .multilineTextAlignment(.leading)
-                }
-                .buttonStyle(.bordered)
-
-                Spacer(minLength: 12)
-
-                Button("Done") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
+            WebsiteImportBar {
+                isBrowserImportPresented = true
             }
-            .sheet(isPresented: $isBrowserImportPresented) {
-                BrowserImportSheet(model: model)
-            }
-            .padding(.top, 18)
         }
-        .padding(24)
-        .frame(width: 600, height: 570)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.pocketBackground)
-        .preferredColorScheme(.dark)
+        .sheet(isPresented: $isBrowserImportPresented) {
+            BrowserImportSheet(model: model)
+        }
         .sheet(item: $editorTarget) { target in
             WebsiteEditorSheet(model: model, website: target.website)
         }
@@ -143,6 +111,99 @@ struct WebsiteManagerSheet: View {
             return "Pocket needs at least one website."
         }
         return "\(websitePendingRemoval.title) will be removed from Pocket."
+    }
+}
+
+private struct WebsiteManagerHeader: View {
+    let websiteCount: Int
+    var showsHeading = true
+    let onAdd: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                if showsHeading {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("Websites")
+                            .font(.system(size: 20, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+
+                        Text("\(websiteCount)")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background {
+                                Capsule()
+                                    .fill(Color.white.opacity(0.1))
+                            }
+                            .accessibilityLabel("\(websiteCount) websites")
+                    }
+                }
+
+                Text("Choose what appears in Pocket's app switcher.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.pocketMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Button(action: onAdd) {
+                Label("Add Website", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, showsHeading ? 18 : 8)
+        .padding(.bottom, 14)
+    }
+}
+
+private struct WebsiteImportBar: View {
+    let onImport: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Text(BrowserSessionImporter.websitesButtonTitle())
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.78))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button("Import Sessions…", action: onImport)
+                .buttonStyle(SettingsImportButtonStyle())
+                .fixedSize(horizontal: true, vertical: true)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity)
+        .background(Color.pocketChrome)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+        }
+    }
+}
+
+private struct SettingsImportButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(configuration.isPressed ? 0.24 : 0.14))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white.opacity(0.28), lineWidth: 1)
+            }
     }
 }
 

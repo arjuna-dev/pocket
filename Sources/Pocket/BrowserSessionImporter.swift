@@ -75,6 +75,9 @@ struct BrowserProfile: Identifiable, Hashable, Sendable {
     var cookieDatabaseURL: URL
     var kind: BrowserKind
     var isDefault: Bool
+    /// A space row is labeled “Space · Profile”. A profile row is a user profile
+    /// that is not already represented by one of those spaces.
+    var listsAsSpace: Bool = false
 }
 
 struct BrowserImportSite: Sendable, Equatable {
@@ -366,8 +369,8 @@ enum BrowserSessionImporter {
     }
 
     private static func profileMenuTitle(for kind: BrowserKind, profiles: [BrowserProfile]) -> String {
-        guard kind == .arc, profiles.contains(where: { $0.name.contains(" · ") }) else { return "Profile" }
-        return "Space"
+        guard kind == .arc else { return "Profile" }
+        return ArcSidebarReader.menuTitle(for: profiles)
     }
 
     static func importCookies(
@@ -845,6 +848,14 @@ enum ArcSidebarReader {
         "\(spaceName) · \(profileName)"
     }
 
+    static func menuTitle(for profiles: [BrowserProfile]) -> String {
+        let hasSpace = profiles.contains(where: \.listsAsSpace)
+        let hasProfile = profiles.contains { !$0.listsAsSpace }
+        if hasSpace && hasProfile { return "Space or profile" }
+        if hasSpace { return "Space" }
+        return "Profile"
+    }
+
     static func profiles(
         in json: Any,
         profileNames: [String: String],
@@ -856,14 +867,15 @@ enum ArcSidebarReader {
             return []
         }
 
-        var profiles: [BrowserProfile] = []
+        var spaces: [BrowserProfile] = []
         var seenSpaceIDs: Set<String> = []
+        var usedDirectories: Set<String> = []
         for container in containers {
             guard let container = container as? [String: Any],
-                  let spaces = container["spaces"] as? [Any] else {
+                  let items = container["spaces"] as? [Any] else {
                 continue
             }
-            for item in spaces {
+            for item in items {
                 guard let space = item as? [String: Any],
                       let spaceID = trimmed(space["id"]),
                       seenSpaceIDs.insert(spaceID).inserted,
@@ -872,25 +884,76 @@ enum ArcSidebarReader {
                       let database = cookieDatabase(directory) else {
                     continue
                 }
-                let storedName = profileNames[directory]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let profileName = (storedName?.isEmpty == false ? storedName : nil) ?? directory
+                let profileName = displayName(for: directory, profileNames: profileNames)
                 if isArcSystemProfile(profileName) { continue }
-                profiles.append(
+                usedDirectories.insert(directory)
+                spaces.append(
                     BrowserProfile(
                         id: "arc:\(spaceID)",
                         name: listLabel(spaceName: spaceName, profileName: profileName),
                         cookieDatabaseURL: database,
                         kind: .arc,
-                        isDefault: spaceID == "thebrowser.company.defaultPersonalSpaceID"
+                        isDefault: spaceID == "thebrowser.company.defaultPersonalSpaceID",
+                        listsAsSpace: true
                     )
                 )
             }
         }
+
+        let created = userProfiles(
+            profileNames: profileNames,
+            excluding: usedDirectories,
+            cookieDatabase: cookieDatabase
+        )
+        if created.contains(where: \.isDefault) {
+            for index in spaces.indices {
+                spaces[index].isDefault = false
+            }
+        }
+        let defaultProfiles = created.filter(\.isDefault)
+        let otherProfiles = created
+            .filter { !$0.isDefault }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return defaultProfiles + spaces + otherProfiles
+    }
+
+    /// Profiles the user created in Arc, including the default “Your Arc”
+    /// profile, when no space already imports that profile's cookies.
+    private static func userProfiles(
+        profileNames: [String: String],
+        excluding usedDirectories: Set<String>,
+        cookieDatabase: (String) -> URL?
+    ) -> [BrowserProfile] {
+        var profiles: [BrowserProfile] = []
+        for directory in profileNames.keys {
+            if usedDirectories.contains(directory) { continue }
+            let profileName = displayName(for: directory, profileNames: profileNames)
+            if isArcSystemProfile(profileName) || isArcSystemProfile(directory) { continue }
+            guard let database = cookieDatabase(directory) else { continue }
+            profiles.append(
+                BrowserProfile(
+                    id: "arc-profile:\(directory)",
+                    name: profileName,
+                    cookieDatabaseURL: database,
+                    kind: .arc,
+                    isDefault: directory == "Default",
+                    listsAsSpace: false
+                )
+            )
+        }
         return profiles
+    }
+
+    private static func displayName(for directory: String, profileNames: [String: String]) -> String {
+        let storedName = profileNames[directory]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (storedName?.isEmpty == false ? storedName : nil) ?? directory
     }
 
     private static func profileDirectory(in profile: Any?) -> String? {
         guard let profile = profile as? [String: Any] else { return nil }
+        if profile["default"] != nil {
+            return "Default"
+        }
         if let custom = profile["custom"] as? [String: Any] {
             let record = (custom["_0"] as? [String: Any]) ?? custom
             if let directory = trimmed(record["directoryBasename"]) {

@@ -4,14 +4,22 @@ import SwiftUI
 struct PocketApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @ObservedObject private var model = PocketModel.shared
+    @ObservedObject private var bindings = KeyBindingStore.shared
 
     var body: some Scene {
         // AppDelegate owns the floating panel; SwiftUI supplies the app menus.
         Settings {
-            EmptyView()
+            PocketSettingsView(model: model)
         }
+        .defaultSize(width: 840, height: 580)
         .commands {
-            CommandGroup(replacing: .appSettings) {}
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    bindings.perform(.settings)
+                }
+                .pocketShortcut(bindings.chord(for: .settings))
+            }
+
             CommandMenu("Pocket") {
                 Section("Presentation") {
                     Button("Device") {
@@ -25,14 +33,23 @@ struct PocketApp: App {
 
                 Section("Orientation") {
                     Button("Portrait") {
-                        model.orientation = .portrait
+                        bindings.perform(.portrait)
                     }
-                    .keyboardShortcut("1", modifiers: [.command])
+                    .pocketShortcut(bindings.chord(for: .portrait))
 
                     Button("Landscape") {
-                        model.orientation = .landscape
+                        bindings.perform(.landscape)
                     }
-                    .keyboardShortcut("2", modifiers: [.command])
+                    .pocketShortcut(bindings.chord(for: .landscape))
+                }
+
+                Section("Screens") {
+                    ForEach(PocketCommand.allCases.filter { $0.screenCount != nil }) { command in
+                        Button(command.title) {
+                            bindings.perform(command)
+                        }
+                        .pocketShortcut(bindings.chord(for: command))
+                    }
                 }
 
                 Section("Navigation") {
@@ -86,7 +103,9 @@ struct PocketApp: App {
                     .disabled(model.activeSlot == nil)
 
                     Button("Manage Sites") {
-                        model.isWebsiteManagerPresented = true
+                        model.settingsSection = .websites
+                        model.isSettingsPresented = true
+                        WindowManager.shared.showSettings()
                     }
 
                     Button(BrowserSessionImporter.buttonTitle()) {

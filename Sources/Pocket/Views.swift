@@ -67,41 +67,10 @@ struct AppRootView: View {
         .onChange(of: model.alwaysOnTop) { _, newValue in
             WindowManager.shared.setAlwaysOnTop(newValue)
         }
-        .sheet(item: rootSheet) { sheet in
-            switch sheet {
-            case .websites:
-                WebsiteManagerSheet(model: model)
-            case .browserImport:
-                BrowserImportSheet(model: model)
-            }
+        .sheet(isPresented: $model.isBrowserImportPresented) {
+            BrowserImportSheet(model: model)
         }
         .preferredColorScheme(.dark)
-    }
-
-    private var rootSheet: Binding<PocketRootSheet?> {
-        Binding(
-            get: {
-                if model.isBrowserImportPresented { return .browserImport }
-                if model.isWebsiteManagerPresented { return .websites }
-                return nil
-            },
-            set: { sheet in
-                model.isWebsiteManagerPresented = sheet == .websites
-                model.isBrowserImportPresented = sheet == .browserImport
-            }
-        )
-    }
-}
-
-private enum PocketRootSheet: Identifiable {
-    case websites
-    case browserImport
-
-    var id: String {
-        switch self {
-        case .websites: return "websites"
-        case .browserImport: return "browserImport"
-        }
     }
 }
 

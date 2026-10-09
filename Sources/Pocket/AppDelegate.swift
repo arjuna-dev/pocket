@@ -38,11 +38,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bottomHost = NSHostingView(rootView: PocketBottomChrome(model: model))
         let rightAddHost = PocketStripHost(rootView: PocketRightAddStrips(model: model))
         let bottomAddHost = PocketStripHost(rootView: PocketBottomAddStrips(model: model))
+        let overlayHost = PocketOverlayHost(rootView: PocketSettingsOverlayRoot(model: model))
         prepareChromeHost(screenHost)
         prepareChromeHost(topHost)
         prepareChromeHost(bottomHost)
         prepareChromeHost(rightAddHost)
         prepareChromeHost(bottomAddHost)
+        prepareChromeHost(overlayHost)
         let panel = PocketPanel(
             contentRect: NSRect(x: 0, y: 0, width: 344, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable,
@@ -58,7 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             topHost: topHost,
             bottomHost: bottomHost,
             rightAddHost: rightAddHost,
-            bottomAddHost: bottomAddHost
+            bottomAddHost: bottomAddHost,
+            overlayHost: overlayHost
         )
         self.panel = panel
 
@@ -72,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         panel.center()
         panel.makeKeyAndOrderFront(nil)
+        KeyBindingStore.shared.start()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

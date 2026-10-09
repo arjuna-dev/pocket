@@ -50,6 +50,12 @@ struct CompactSiteSwitcher: View {
                         .fill(Color(red: 0.145, green: 0.155, blue: 0.175))
                 }
         }
+        .onChange(of: isPresented) { _, presented in
+            guard !presented else { return }
+            DispatchQueue.main.async {
+                model.isChoosingSiteForEmptyCell = false
+            }
+        }
     }
 }
 
@@ -61,9 +67,22 @@ private struct CompactSiteMenu: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
+            if model.isChoosingSiteForEmptyCell {
+                Text("Add a website")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.55))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 4)
+            }
             ForEach(model.enabledApps) { app in
                 Button {
-                    model.select(app, in: slot)
+                    let fillingEmpty = model.isChoosingSiteForEmptyCell
+                    model.isChoosingSiteForEmptyCell = false
+                    if fillingEmpty {
+                        model.fillEmpty(with: app)
+                    } else {
+                        model.select(app, in: slot)
+                    }
                     isPresented = false
                 } label: {
                     HStack(spacing: 10) {
@@ -75,7 +94,7 @@ private struct CompactSiteMenu: View {
 
                         Spacer(minLength: 12)
 
-                        if app.id == slot.app.id {
+                        if !model.isChoosingSiteForEmptyCell, app.id == slot.app.id {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(Color(red: 0.45, green: 0.84, blue: 0.52))

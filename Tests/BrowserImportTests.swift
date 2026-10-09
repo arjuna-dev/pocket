@@ -21,6 +21,7 @@ struct BrowserImportTests {
         try testButtonTitle()
         try testWebsitesButtonTitle()
         try testArcSpaceLabels()
+        try testArcIncludesDefaultProfile()
         try testHostMatching()
         try testDecryption()
         try testCookieQuery()
@@ -129,6 +130,94 @@ struct BrowserImportTests {
         try expect(profiles.map(\.name) == ["Personal · CODE", "CODE · University"], "Arc lists each space with its profile and skips system profiles")
         try expect(profiles.first?.isDefault == true, "Arc's personal space is the default")
         try expect(profiles.first?.cookieDatabaseURL == databases["Profile 1"], "A space imports cookies from its profile")
+        try expect(profiles.allSatisfy(\.listsAsSpace), "Sidebar rows are spaces")
+        try expect(ArcSidebarReader.menuTitle(for: profiles) == "Space", "A space-only list keeps the Space label")
+    }
+
+    static func testArcIncludesDefaultProfile() throws {
+        let sidebar: [String: Any] = [
+            "sidebar": [
+                "containers": [
+                    [
+                        "spaces": [
+                            [
+                                "id": "thebrowser.company.defaultPersonalSpaceID",
+                                "title": "Personal",
+                                "profile": [
+                                    "custom": [
+                                        "_0": ["directoryBasename": "Profile 1"]
+                                    ]
+                                ]
+                            ],
+                            [
+                                "id": "space-default",
+                                "title": "Work",
+                                "profile": ["default": [:]]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        let databases: [String: URL] = [
+            "Default": URL(fileURLWithPath: "/tmp/Default/Cookies"),
+            "Profile 1": URL(fileURLWithPath: "/tmp/Profile 1/Cookies"),
+            "Profile 5": URL(fileURLWithPath: "/tmp/Profile 5/Cookies"),
+            "Profile 4": URL(fileURLWithPath: "/tmp/Profile 4/Cookies")
+        ]
+        let profiles = ArcSidebarReader.profiles(
+            in: sidebar,
+            profileNames: [
+                "Default": "Your Arc",
+                "Profile 1": "CODE",
+                "Profile 5": "Info DTM Account",
+                "Profile 4": "__ARC_SYSTEM_PROFILE"
+            ],
+            cookieDatabase: { databases[$0] }
+        )
+        try expect(
+            profiles.map(\.name) == ["Personal · CODE", "Work · Your Arc", "Info DTM Account"],
+            "User spaces stay, the default profile used by a space is not repeated, and an unused user profile is listed, got \(profiles.map(\.name))"
+        )
+        try expect(profiles.contains { $0.name == "Your Arc" } == false, "A default profile already used by a space is not listed twice")
+        try expect(!profiles.contains { $0.name.contains("SYSTEM") }, "System profiles stay hidden")
+
+        let withLooseDefault = ArcSidebarReader.profiles(
+            in: [
+                "sidebar": [
+                    "containers": [
+                        [
+                            "spaces": [
+                                [
+                                    "id": "thebrowser.company.defaultPersonalSpaceID",
+                                    "title": "Personal",
+                                    "profile": [
+                                        "custom": [
+                                            "_0": ["directoryBasename": "Profile 1"]
+                                        ]
+                                    ]
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            profileNames: [
+                "Default": "Your Arc",
+                "Profile 1": "CODE"
+            ],
+            cookieDatabase: { databases[$0] }
+        )
+        try expect(
+            withLooseDefault.map(\.name) == ["Your Arc", "Personal · CODE"],
+            "The default profile is listed when no space uses it, got \(withLooseDefault.map(\.name))"
+        )
+        try expect(withLooseDefault.first?.isDefault == true, "The default profile is the selected source")
+        try expect(withLooseDefault.last?.isDefault == false, "The personal space yields selection to the default profile")
+        try expect(
+            ArcSidebarReader.menuTitle(for: withLooseDefault) == "Space or profile",
+            "A mixed list names both spaces and profiles"
+        )
     }
 
     static func testHostMatching() throws {

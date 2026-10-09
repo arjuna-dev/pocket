@@ -263,6 +263,16 @@ final class WindowManager: ObservableObject {
         }
     }
 
+    func showSettings() {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.showSettings() }
+            return
+        }
+        NSApp.activate()
+        window?.makeKeyAndOrderFront(nil)
+        PocketModel.shared.isSettingsPresented = true
+    }
+
     func closeWindow() {
         window?.performClose(nil)
     }
@@ -542,6 +552,7 @@ final class WindowManager: ObservableObject {
 
     @discardableResult
     func beginEdgeResize(with event: NSEvent, in window: NSWindow) -> Bool {
+        guard !PocketModel.shared.isSettingsPresented else { return false }
         guard event.type == .leftMouseDown, let contentView = window.contentView else { return false }
         let point = contentView.convert(event.locationInWindow, from: nil)
         if (contentView as? PocketChromeContainer)?.addStripContains(point) == true {
@@ -571,6 +582,7 @@ final class WindowManager: ObservableObject {
     }
 
     func updateResizeCursor(with event: NSEvent, in window: NSWindow) {
+        guard !PocketModel.shared.isSettingsPresented else { return }
         guard let contentView = window.contentView else { return }
         let point = contentView.convert(event.locationInWindow, from: nil)
         if (contentView as? PocketChromeContainer)?.addStripContains(point) == true {
@@ -698,6 +710,7 @@ final class PocketChromeContainer: NSView {
     let bottomHost: NSView
     let rightAddHost: NSView
     let bottomAddHost: NSView
+    let overlayHost: NSView
     var screenSize: CGSize = .zero
     var showsRightStrip = false {
         didSet { needsLayout = true }
@@ -718,13 +731,15 @@ final class PocketChromeContainer: NSView {
         topHost: NSView,
         bottomHost: NSView,
         rightAddHost: NSView,
-        bottomAddHost: NSView
+        bottomAddHost: NSView,
+        overlayHost: NSView
     ) {
         self.screenHost = screenHost
         self.topHost = topHost
         self.bottomHost = bottomHost
         self.rightAddHost = rightAddHost
         self.bottomAddHost = bottomAddHost
+        self.overlayHost = overlayHost
         topHeight = CompactLayout.screenBarHeight
         bottomHeight = CompactLayout.controlsStripHeight
         super.init(frame: .zero)
@@ -736,18 +751,20 @@ final class PocketChromeContainer: NSView {
         autoresizingMask = [.width, .height]
         autoresizesSubviews = false
 
-        for host in [screenHost, topHost, bottomHost, rightAddHost, bottomAddHost] {
+        for host in [screenHost, topHost, bottomHost, rightAddHost, bottomAddHost, overlayHost] {
             host.translatesAutoresizingMaskIntoConstraints = false
             host.wantsLayer = true
         }
         rightAddHost.layer?.backgroundColor = NSColor.clear.cgColor
         bottomAddHost.layer?.backgroundColor = NSColor.clear.cgColor
+        overlayHost.layer?.backgroundColor = NSColor.clear.cgColor
         screenHost.clipsToBounds = true
         addSubview(screenHost)
         addSubview(bottomHost)
         addSubview(bottomAddHost)
         addSubview(topHost)
         addSubview(rightAddHost)
+        addSubview(overlayHost)
     }
 
     required init?(coder: NSCoder) {
@@ -817,6 +834,10 @@ final class PocketChromeContainer: NSView {
         )
         rightAddHost.isHidden = rightStrip == 0
         bottomAddHost.isHidden = bottomStrip == 0
+        overlayHost.frame = bounds
+        if subviews.last !== overlayHost {
+            addSubview(overlayHost)
+        }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -943,8 +964,16 @@ final class HoverTrackingNSView: NSView {
         }
 
         mouseDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
-            if let self, let window = self.window, event.window?.windowNumber == window.windowNumber,
-               let point = self.swiftPoint(fromScreen: window.convertPoint(toScreen: event.locationInWindow)) {
+            guard let self, let window = self.window, event.window?.windowNumber == window.windowNumber else {
+                return event
+            }
+            // Settings, import, and the website sheet sit above the screens.
+            // A click there must leave the focused screen alone.
+            let model = PocketModel.shared
+            if model.isSettingsPresented || model.isBrowserImportPresented || model.isScreenRemovalPresented {
+                return event
+            }
+            if let point = self.swiftPoint(fromScreen: window.convertPoint(toScreen: event.locationInWindow)) {
                 self.onMouseDown?(point)
             }
             return event

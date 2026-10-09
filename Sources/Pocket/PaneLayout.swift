@@ -105,6 +105,100 @@ enum PaneNode: Equatable, Codable {
         }
     }
 
+    /// Drops a row only after every cell in it is empty. An empty cell beside a
+    /// screen stays empty so the screen keeps its size.
+    func collapsingVacancies() -> PaneNode {
+        switch self {
+        case .leaf, .empty:
+            return self
+        case .split(let axis, let ratio, let first, let second):
+            let leading = first.collapsingVacancies()
+            let trailing = second.collapsingVacancies()
+            if leading.isVacant, trailing.isVacant {
+                return .empty
+            }
+            if axis == .horizontal {
+                if trailing.isVacant { return leading }
+                if leading.isVacant { return trailing }
+            }
+            return .split(axis: axis, ratio: ratio, first: leading, second: trailing)
+        }
+    }
+
+    func columnSplitRatio() -> Double? {
+        switch self {
+        case .split(let axis, let ratio, let first, let second):
+            if axis == .vertical { return ratio }
+            return first.columnSplitRatio() ?? second.columnSplitRatio()
+        default:
+            return nil
+        }
+    }
+
+    func rowSplitRatio() -> Double? {
+        switch self {
+        case .split(let axis, let ratio, let first, let second):
+            if axis == .horizontal { return ratio }
+            return first.rowSplitRatio() ?? second.rowSplitRatio()
+        default:
+            return nil
+        }
+    }
+
+    /// Rebuilds a grid from its corners. A fully empty row or column is removed.
+    /// A single empty corner stays empty.
+    static func grid(from placed: ScreenPlacement) -> PaneNode {
+        let topGone = placed.topLeading == nil && placed.topTrailing == nil
+        let bottomGone = placed.bottomLeading == nil && placed.bottomTrailing == nil
+        let leftGone = placed.topLeading == nil && placed.bottomLeading == nil
+        let rightGone = placed.topTrailing == nil && placed.bottomTrailing == nil
+
+        if bottomGone {
+            return band(placed.topLeading, placed.topTrailing, ratio: placed.columnRatio, axis: .vertical)
+        }
+        if topGone {
+            return band(placed.bottomLeading, placed.bottomTrailing, ratio: placed.columnRatio, axis: .vertical)
+        }
+        if leftGone {
+            return band(placed.topTrailing, placed.bottomTrailing, ratio: placed.rowRatio, axis: .horizontal)
+        }
+        if rightGone {
+            return band(placed.topLeading, placed.bottomLeading, ratio: placed.rowRatio, axis: .horizontal)
+        }
+
+        let top = PaneNode.split(
+            axis: .vertical,
+            ratio: placed.columnRatio,
+            first: cell(placed.topLeading),
+            second: cell(placed.topTrailing)
+        )
+        let bottom = PaneNode.split(
+            axis: .vertical,
+            ratio: placed.columnRatio,
+            first: cell(placed.bottomLeading),
+            second: cell(placed.bottomTrailing)
+        )
+        return .split(axis: .horizontal, ratio: placed.rowRatio, first: top, second: bottom)
+    }
+
+    private static func cell(_ id: Int?) -> PaneNode {
+        if let id { return .leaf(id) }
+        return .empty
+    }
+
+    private static func band(_ first: Int?, _ second: Int?, ratio: Double, axis: SplitAxis) -> PaneNode {
+        switch (first, second) {
+        case let (leading?, trailing?):
+            return .split(axis: axis, ratio: ratio, first: .leaf(leading), second: .leaf(trailing))
+        case let (leading?, nil):
+            return .leaf(leading)
+        case let (nil, trailing?):
+            return .leaf(trailing)
+        default:
+            return .empty
+        }
+    }
+
     /// An empty cell, or a split made only of empty cells.
     var isVacant: Bool {
         switch self {
@@ -520,6 +614,30 @@ struct GapStrip: Equatable, Identifiable {
     }
 }
 
+struct ScreenPlacement: Equatable {
+    var topLeading: Int?
+    var topTrailing: Int?
+    var bottomLeading: Int?
+    var bottomTrailing: Int?
+    var columnRatio: Double
+    var rowRatio: Double
+
+    mutating func clearing(_ id: Int) -> Bool {
+        var matched = false
+        func clear(_ slot: inout Int?) {
+            if slot == id {
+                slot = nil
+                matched = true
+            }
+        }
+        clear(&topLeading)
+        clear(&topTrailing)
+        clear(&bottomLeading)
+        clear(&bottomTrailing)
+        return matched
+    }
+}
+
 struct PaneLayout: Equatable, Codable {
     static let maxLeaves = 4
     static let maxRows = 2
@@ -536,6 +654,18 @@ struct PaneLayout: Equatable, Codable {
     var leafIDs: [Int] { root.leafIDs }
     var leafCount: Int { leafIDs.count }
     var footprint: LayoutFootprint { root.footprint }
+
+    /// First layout for a screen count that has never been opened.
+    static func preset(screenCount: Int) -> PaneLayout {
+        switch screenCount {
+        case 2:
+            return PaneLayout(root: .split(axis: .vertical, ratio: 0.5, first: .leaf(0), second: .leaf(1)))
+        case 3, 4:
+            return migrated(fromScreenCount: screenCount)
+        default:
+            return .single
+        }
+    }
 
     static func migrated(fromScreenCount count: Int) -> PaneLayout {
         switch count {
@@ -678,8 +808,187 @@ struct PaneLayout: Equatable, Codable {
     }
 
     func closing(_ id: Int) -> PaneLayout? {
-        guard leafCount > 1, let next = root.removing(id) else { return nil }
-        return PaneLayout(root: next)
+        guard leafCount > 1, root.contains(id) else { return nil }
+        // A grid keeps its other cells the same size. The closed screen becomes
+        // an empty gap. A whole empty row or column drops away. A single row
+        // or column still collapses into the survivor.
+        guard root.gridSpan.rows > 1, root.gridSpan.columns > 1 else {
+            guard let next = root.removing(id) else { return nil }
+            return PaneLayout(root: next)
+        }
+        var placed = placement()
+        let cleared = placed.clearing(id)
+        guard cleared else {
+            guard let next = root.removing(id) else { return nil }
+            return PaneLayout(root: next)
+        }
+        return PaneLayout(root: PaneNode.grid(from: placed))
+    }
+
+    /// True when this layout is the arrangement that screen count remembers.
+    func matchesStage(_ count: Int) -> Bool {
+        let placed = placement()
+        switch count {
+        case 1:
+            return leafCount == 1
+        case 2:
+            let sideBySide = placed.topLeading != nil && placed.topTrailing != nil
+                && placed.bottomLeading == nil && placed.bottomTrailing == nil
+            let stacked = placed.topLeading != nil && placed.bottomLeading != nil
+                && placed.topTrailing == nil && placed.bottomTrailing == nil
+            return sideBySide || stacked
+        case 3:
+            guard root.gridSpan.rows > 1, root.gridSpan.columns > 1, !hasStretchedCell else { return false }
+            let filled = [placed.topLeading, placed.topTrailing, placed.bottomLeading, placed.bottomTrailing]
+                .compactMap { $0 }
+            return filled.count == 3 && Set(filled).count == 3
+        case 4:
+            guard root.gridSpan.rows > 1, root.gridSpan.columns > 1, !hasStretchedCell else { return false }
+            let filled = [placed.topLeading, placed.topTrailing, placed.bottomLeading, placed.bottomTrailing]
+                .compactMap { $0 }
+            return (filled.count == 3 || filled.count == 4) && Set(filled).count == filled.count
+        default:
+            return false
+        }
+    }
+
+    /// One screen covers a whole row or column beside other screens, as when
+    /// a cell is dragged across an empty neighbor. A grid that still has an
+    /// empty corner is the four-screen layout, even if a seam sits far to one side.
+    var spansFullBand: Bool {
+        leafCount == 3 && !root.hasEmpty && hasStretchedCell
+    }
+
+    /// A screen that spans a whole row or column inside a grid. That shape is
+    /// left behind when a neighbor was removed and stretched into the gap.
+    private var hasStretchedCell: Bool {
+        let canvas = CGSize(width: 1000, height: 1000)
+        let span = root.gridSpan
+        return frames(in: canvas).values.contains { frame in
+            (span.columns > 1 && frame.width > canvas.width * 0.8)
+                || (span.rows > 1 && frame.height > canvas.height * 0.8)
+        }
+    }
+
+    /// Builds the 1–4 screen arrangement around the screens already on display.
+    /// Existing screens stay in their corners. New corners get fresh leaf ids.
+    func arranged(forScreenCount count: Int) -> (layout: PaneLayout, newLeafIDs: [Int]) {
+        let placed = placement()
+        let columnRatio = placed.columnRatio
+        let rowRatio = root.gridSpan.rows > 1 ? placed.rowRatio : 0.5
+        var kept: [Int] = []
+        func remember(_ id: Int?) {
+            if let id, !kept.contains(id) { kept.append(id) }
+        }
+        switch count {
+        case 1:
+            remember(placed.topLeading)
+        case 2:
+            remember(placed.topLeading)
+            remember(placed.topTrailing)
+        case 3:
+            remember(placed.topLeading)
+            remember(placed.topTrailing)
+            if placed.bottomLeading != nil, placed.bottomTrailing != nil {
+                remember(placed.bottomLeading)
+            } else {
+                remember(placed.bottomLeading)
+                remember(placed.bottomTrailing)
+            }
+        default:
+            remember(placed.topLeading)
+            remember(placed.topTrailing)
+            remember(placed.bottomLeading)
+            remember(placed.bottomTrailing)
+        }
+
+        var free = (0..<PaneLayout.maxLeaves).filter { !kept.contains($0) }
+        var newLeafIDs: [Int] = []
+        func resolve(_ id: Int?) -> Int {
+            if let id, kept.contains(id) { return id }
+            let created = free.removeFirst()
+            newLeafIDs.append(created)
+            return created
+        }
+
+        switch count {
+        case 1:
+            return (PaneLayout(root: .leaf(resolve(placed.topLeading))), newLeafIDs)
+        case 2:
+            let root = PaneNode.split(
+                axis: .vertical,
+                ratio: columnRatio,
+                first: .leaf(resolve(placed.topLeading)),
+                second: .leaf(resolve(placed.topTrailing))
+            )
+            return (PaneLayout(root: root), newLeafIDs)
+        case 3:
+            let top = PaneNode.split(
+                axis: .vertical,
+                ratio: columnRatio,
+                first: .leaf(resolve(placed.topLeading)),
+                second: .leaf(resolve(placed.topTrailing))
+            )
+            let keptBottomLeading = placed.bottomLeading.flatMap { kept.contains($0) ? PaneNode.leaf($0) : nil }
+            let keptBottomTrailing = placed.bottomTrailing.flatMap { kept.contains($0) ? PaneNode.leaf($0) : nil }
+            let bottomLeading: PaneNode
+            let bottomTrailing: PaneNode
+            if keptBottomLeading == nil, keptBottomTrailing == nil {
+                bottomLeading = .leaf(resolve(nil))
+                bottomTrailing = .empty
+            } else {
+                bottomLeading = keptBottomLeading ?? .empty
+                bottomTrailing = keptBottomTrailing ?? .empty
+            }
+            let bottom = PaneNode.split(
+                axis: .vertical,
+                ratio: columnRatio,
+                first: bottomLeading,
+                second: bottomTrailing
+            )
+            let root = PaneNode.split(axis: .horizontal, ratio: rowRatio, first: top, second: bottom)
+            return (PaneLayout(root: root), newLeafIDs)
+        default:
+            let top = PaneNode.split(
+                axis: .vertical,
+                ratio: columnRatio,
+                first: .leaf(resolve(placed.topLeading)),
+                second: .leaf(resolve(placed.topTrailing))
+            )
+            let bottom = PaneNode.split(
+                axis: .vertical,
+                ratio: columnRatio,
+                first: .leaf(resolve(placed.bottomLeading)),
+                second: .leaf(resolve(placed.bottomTrailing))
+            )
+            let root = PaneNode.split(axis: .horizontal, ratio: rowRatio, first: top, second: bottom)
+            return (PaneLayout(root: root), newLeafIDs)
+        }
+    }
+
+    func placement() -> ScreenPlacement {
+        let canvas = CGSize(width: 1000, height: 1000)
+        let frames = frames(in: canvas)
+        let span = root.gridSpan
+        var placed = ScreenPlacement(
+            columnRatio: root.columnSplitRatio() ?? 0.5,
+            rowRatio: root.rowSplitRatio() ?? 0.5
+        )
+        for (id, frame) in frames {
+            let onRight = span.columns > 1 && frame.midX > canvas.width / 2
+            let onBottom = span.rows > 1 && frame.midY > canvas.height / 2
+            switch (onBottom, onRight) {
+            case (false, false):
+                placed.topLeading = id
+            case (false, true):
+                placed.topTrailing = id
+            case (true, false):
+                placed.bottomLeading = id
+            case (true, true):
+                placed.bottomTrailing = id
+            }
+        }
+        return placed
     }
 
     func settingRatio(_ ratio: Double, at path: [Bool]) -> PaneLayout {

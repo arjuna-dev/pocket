@@ -40,7 +40,9 @@ struct CompactControls: View {
                 title: "Manage sites",
                 showsTitle: showsTitles
             ) {
-                model.isWebsiteManagerPresented = true
+                model.settingsSection = .websites
+                model.isSettingsPresented = true
+                WindowManager.shared.showSettings()
             }
         }
         .padding(.horizontal, showsTitles ? 12 : 10)

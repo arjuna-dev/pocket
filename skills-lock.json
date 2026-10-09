@@ -7,6 +7,12 @@
       "skillPath": "skills/appkit-accessibility-auditor/SKILL.md",
       "computedHash": "8d62ddf9cfde38a85a1d14bd359e7136e60a0dd4548a4d91f87772941dae60c7"
     },
+    "macos-design-guidelines": {
+      "source": "ehmo/platform-design-skills",
+      "sourceType": "github",
+      "skillPath": "skills/macos/SKILL.md",
+      "computedHash": "fdbeb208feb60e5ed08226e4e1e714eade6cfe6530ad27c792992823de63ca0d"
+    },
     "swift-concurrency": {
       "source": "AvdLee/Swift-Concurrency-Agent-Skill",
       "sourceType": "github",

@@ -21,70 +21,50 @@ struct BrowserImportSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(offer.buttonTitle)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-
-            Text(offer.explanation)
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.pocketMuted)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if offer.profiles.count > 1 {
-                Picker(offer.profileMenuTitle, selection: $selectedProfileID) {
-                    ForEach(offer.profiles) { profile in
-                        Text(profile.name).tag(profile.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .disabled(isImporting)
-            } else if let profile = offer.profiles.first {
-                Text("\(offer.profileMenuTitle): \(profile.name)")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 20) {
+            BrowserImportIntroduction(title: offer.buttonTitle, explanation: offer.explanation)
+            BrowserImportSourcePicker(
+                title: offer.profileMenuTitle,
+                profiles: offer.profiles,
+                selectedProfileID: $selectedProfileID,
+                isEnabled: !isImporting && offer.canImport
+            )
+            if resultMessage != nil || errorMessage != nil {
+                BrowserImportFeedback(result: resultMessage, error: errorMessage)
             }
-
-            if let resultMessage {
-                Text(resultMessage)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color(red: 1.0, green: 0.45, blue: 0.42))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-
-            HStack {
-                Button("Close") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Spacer()
-
-                Button(isImporting ? "Importing…" : "Import") {
-                    Task { await runImport() }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
-                .disabled(isImporting || !offer.canImport || selectedProfile == nil)
-            }
+            BrowserImportActions(
+                primaryTitle: primaryTitle,
+                isPrimaryDisabled: isPrimaryDisabled,
+                onCancel: dismiss.callAsFunction,
+                onPrimary: performPrimary
+            )
         }
-        .padding(24)
-        .frame(width: 520, height: 420)
-        .background(Color.pocketBackground)
-        .preferredColorScheme(.dark)
+        .padding(20)
+        .frame(width: 480)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var primaryTitle: String {
+        if resultMessage != nil { return "Done" }
+        return isImporting ? "Importing…" : "Import"
+    }
+
+    private var isPrimaryDisabled: Bool {
+        if resultMessage != nil { return false }
+        return isImporting || !offer.canImport || selectedProfile == nil
     }
 
     private var selectedProfile: BrowserProfile? {
         offer.profiles.first { $0.id == selectedProfileID }
+    }
+
+    private func performPrimary() {
+        if resultMessage != nil {
+            dismiss()
+            return
+        }
+        Task { await runImport() }
     }
 
     private func runImport() async {
@@ -104,6 +84,100 @@ struct BrowserImportSheet: View {
             resultMessage = report.summary
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+}
+
+private struct BrowserImportIntroduction: View {
+    let title: String
+    let explanation: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.title2)
+                .foregroundStyle(.primary)
+                .accessibilityAddTraits(.isHeader)
+
+            Text(explanation)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct BrowserImportSourcePicker: View {
+    let title: String
+    let profiles: [BrowserProfile]
+    @Binding var selectedProfileID: String
+    let isEnabled: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if profiles.count > 1 {
+                Picker(title, selection: $selectedProfileID) {
+                    ForEach(profiles) { profile in
+                        Text(profile.name).tag(profile.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(!isEnabled)
+                .accessibilityLabel(title)
+            } else if let profile = profiles.first {
+                LabeledContent(title) {
+                    Text(profile.name)
+                        .foregroundStyle(.primary)
+                }
+                .font(.body)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct BrowserImportFeedback: View {
+    let result: String?
+    let error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let result {
+                Text(result)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.body)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+private struct BrowserImportActions: View {
+    let primaryTitle: String
+    let isPrimaryDisabled: Bool
+    let onCancel: () -> Void
+    let onPrimary: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+
+            Button("Cancel", action: onCancel)
+                .keyboardShortcut(.cancelAction)
+
+            Button(primaryTitle, action: onPrimary)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(isPrimaryDisabled)
         }
     }
 }

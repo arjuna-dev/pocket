@@ -19,76 +19,24 @@ struct WebsiteEditorSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            header
-            websiteFields
-            validationNotice
-            Spacer(minLength: 0)
-            footer
-        }
-        .padding(24)
-        .frame(width: 480, height: 280)
-        .background(Color.pocketBackground)
-        .preferredColorScheme(.dark)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(website == nil ? "Add Website" : "Edit Website")
-                .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-
-            Text("Give the site a name and URL for Pocket.")
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.pocketMuted)
-        }
-    }
-
-    private var websiteFields: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            Text("Name")
-                .formLabelStyle()
-            TextField("e.g. Notion", text: $title)
-                .textFieldStyle(.roundedBorder)
-
-            Text("Website URL")
-                .formLabelStyle()
-            TextField("https://example.com", text: $urlString)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
-
-    @ViewBuilder
-    private var validationNotice: some View {
-        if let validationMessage {
-            Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.orange)
-        }
-    }
-
-    private var footer: some View {
-        HStack {
-            Button("Cancel") {
-                dismiss()
+        VStack(alignment: .leading, spacing: 20) {
+            WebsiteEditorIntroduction(
+                title: website == nil ? "Add Website" : "Edit Website",
+                explanation: "Give the site a name and URL for Pocket."
+            )
+            WebsiteEditorFields(title: $title, urlString: $urlString)
+            if let validationMessage {
+                WebsiteEditorValidation(message: validationMessage)
             }
-            .keyboardShortcut(.cancelAction)
-
-            if let website, website.isBuiltIn {
-                Text("Built-in website")
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.pocketMuted)
-            }
-
-            Spacer()
-
-            Button("Save") {
-                save()
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
-            .keyboardShortcut(.defaultAction)
+            WebsiteEditorActions(
+                onCancel: dismiss.callAsFunction,
+                onSave: save
+            )
         }
+        .padding(20)
+        .frame(width: 420)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private func save() {
@@ -142,9 +90,81 @@ struct WebsiteEditorSheet: View {
     }
 }
 
-private extension View {
-    func formLabelStyle() -> some View {
-        font(.system(size: 11, weight: .semibold, design: .rounded))
-            .foregroundStyle(Color.white.opacity(0.72))
+private struct WebsiteEditorIntroduction: View {
+    let title: String
+    let explanation: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.title2)
+                .foregroundStyle(.primary)
+                .accessibilityAddTraits(.isHeader)
+
+            Text(explanation)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+private struct WebsiteEditorFields: View {
+    @Binding var title: String
+    @Binding var urlString: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            WebsiteEditorField(label: "Name", prompt: "e.g. Notion", text: $title)
+            WebsiteEditorField(label: "Website URL", prompt: "https://example.com", text: $urlString)
+        }
+    }
+}
+
+private struct WebsiteEditorField: View {
+    let label: String
+    let prompt: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.body)
+                .foregroundStyle(.primary)
+
+            TextField(prompt, text: $text)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel(label)
+        }
+    }
+}
+
+private struct WebsiteEditorValidation: View {
+    let message: String
+
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.body)
+            .foregroundStyle(.red)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(message)
+    }
+}
+
+private struct WebsiteEditorActions: View {
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+
+            Button("Cancel", action: onCancel)
+                .keyboardShortcut(.cancelAction)
+
+            Button("Save", action: onSave)
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+        }
     }
 }
