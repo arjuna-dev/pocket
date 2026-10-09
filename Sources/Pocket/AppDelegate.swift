@@ -6,6 +6,21 @@ import SwiftUI
 final class PocketPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .mouseMoved {
+            WindowManager.shared.updateResizeCursor(with: event, in: self)
+        }
+        if event.type == .leftMouseDown, WindowManager.shared.beginEdgeResize(with: event, in: self) {
+            return
+        }
+        super.sendEvent(event)
+    }
+}
+
+private func prepareChromeHost<Content: View>(_ host: NSHostingView<Content>) {
+    host.sizingOptions = []
+    host.safeAreaRegions = []
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -18,6 +33,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let model = PocketModel.shared
+        let screenHost = NSHostingView(rootView: AppRootView(model: model))
+        let topHost = NSHostingView(rootView: PocketTopChrome(model: model))
+        let bottomHost = NSHostingView(rootView: PocketBottomChrome(model: model))
+        let rightAddHost = PocketStripHost(rootView: PocketRightAddStrips(model: model))
+        let bottomAddHost = PocketStripHost(rootView: PocketBottomAddStrips(model: model))
+        let overlayHost = PocketOverlayHost(rootView: PocketSettingsOverlayRoot(model: model))
+        prepareChromeHost(screenHost)
+        prepareChromeHost(topHost)
+        prepareChromeHost(bottomHost)
+        prepareChromeHost(rightAddHost)
+        prepareChromeHost(bottomAddHost)
+        prepareChromeHost(overlayHost)
         let panel = PocketPanel(
             contentRect: NSRect(x: 0, y: 0, width: 344, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable,
@@ -28,7 +55,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = false
-        panel.contentView = NSHostingView(rootView: AppRootView(model: model))
+        panel.contentView = PocketChromeContainer(
+            screenHost: screenHost,
+            topHost: topHost,
+            bottomHost: bottomHost,
+            rightAddHost: rightAddHost,
+            bottomAddHost: bottomAddHost,
+            overlayHost: overlayHost
+        )
         self.panel = panel
 
         WindowManager.shared.attach(window: panel)
@@ -36,10 +70,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         WindowManager.shared.restoreSize(
             for: model.presentationMode,
             orientation: model.orientation,
+            footprint: model.layoutFootprint,
             animated: false
         )
         panel.center()
         panel.makeKeyAndOrderFront(nil)
+        KeyBindingStore.shared.start()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

@@ -11,6 +11,24 @@
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>MacOS/Pocket.bin</key>
+		<dict>
+			<key>cdhash</key>
+			<data>
+			nWpT0xZ6hKFA9YMOyF763bi4k7s=
+			</data>
+			<key>requirement</key>
+			<string>cdhash H"9d6a53d3167a84a140f5830ec85efaddb8b893bb"</string>
+		</dict>
+		<key>MacOS/libPocketUserAgent.dylib</key>
+		<dict>
+			<key>cdhash</key>
+			<data>
+			Hhd23IXHb8TpkIIJqMpL/m9r+p4=
+			</data>
+			<key>requirement</key>
+			<string>cdhash H"1e1776dc85c76fc4e9908209a8ca4bfe6f6bfa9e"</string>
+		</dict>
 		<key>Resources/AppIcon.icns</key>
 		<dict>
 			<key>hash2</key>
