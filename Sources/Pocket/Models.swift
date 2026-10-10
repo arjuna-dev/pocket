@@ -206,7 +206,7 @@ enum DeviceOrientation: String, CaseIterable, Identifiable {
 }
 
 enum CompactLayout {
-    static let controlsIdealWidth: CGFloat = 310
+    static let controlsIdealWidth: CGFloat = 350
     static let controlsBaseHeight: CGFloat = 40
     static let windowControlsBayHeight: CGFloat = 40
     static let controlsHorizontalInset: CGFloat = 8
@@ -225,10 +225,6 @@ enum CompactLayout {
 }
 
 extension PresentationMode {
-    var screenDragBarHeight: CGFloat {
-        self == .screen ? 16 : 0
-    }
-
     var minimumScale: CGFloat {
         switch self {
         case .device: return 0.62
@@ -253,11 +249,53 @@ extension PresentationMode {
             let viewingWidth = screenSize.width * scale
             return CGSize(
                 width: viewingWidth,
-                height: (screenSize.height + screenDragBarHeight) * scale
+                height: screenSize.height * scale
                     + CompactLayout.windowControlsBayHeight
                     + CompactLayout.controlsBayHeight(for: viewingWidth)
             )
         }
+    }
+}
+
+// A screen owns its web views even while its layout is hidden. Sites share their
+// cookie store across screens, but never share a WKWebView or navigation history.
+final class PocketScreen: ObservableObject, Identifiable {
+    let id: Int
+    @Published private(set) var selectedApp: SimulatedApp
+    private var controllers: [String: WebViewController] = [:]
+    private let defaults: UserDefaults
+    private let loadPages: Bool
+
+    init(id: Int, app: SimulatedApp, defaults: UserDefaults, loadPages: Bool) {
+        self.id = id
+        self.selectedApp = app
+        self.defaults = defaults
+        self.loadPages = loadPages
+        defaults.set(app.id, forKey: "Pocket.screen.\(id).app")
+    }
+
+    func select(_ app: SimulatedApp) {
+        selectedApp = app
+        defaults.set(app.id, forKey: "Pocket.screen.\(id).app")
+    }
+
+    func controller(for app: SimulatedApp) -> WebViewController {
+        if let controller = controllers[app.id] { return controller }
+        let controller = WebViewController(app: app, loadImmediately: false)
+        let key = "Pocket.screen.\(id).url.\(app.id)"
+        let savedURL = defaults.string(forKey: key).flatMap(URL.init(string:))
+        controller.onURLChanged = { [weak self] url in
+            guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+            self?.defaults.set(url.absoluteString, forKey: key)
+        }
+        controllers[app.id] = controller
+        if loadPages { controller.load(url: WebViewController.restoredURL(savedURL, for: app)) }
+        return controller
+    }
+
+    func invalidate(_ app: SimulatedApp) {
+        controllers.removeValue(forKey: app.id)?.webView.stopLoading()
+        defaults.removeObject(forKey: "Pocket.screen.\(id).url.\(app.id)")
     }
 }
 
@@ -266,30 +304,38 @@ final class PocketModel: ObservableObject {
 
     @Published var selectedApp: SimulatedApp {
         didSet {
-            UserDefaults.standard.set(selectedApp.id, forKey: Self.selectedAppKey)
+            defaults.set(selectedApp.id, forKey: Self.selectedAppKey)
         }
     }
 
     @Published var presentationMode: PresentationMode {
         didSet {
-            UserDefaults.standard.set(presentationMode.rawValue, forKey: Self.presentationModeKey)
+            defaults.set(presentationMode.rawValue, forKey: Self.presentationModeKey)
         }
     }
 
     @Published var orientation: DeviceOrientation {
         didSet {
-            UserDefaults.standard.set(orientation.rawValue, forKey: Self.orientationKey)
+            defaults.set(orientation.rawValue, forKey: Self.orientationKey)
         }
     }
 
     @Published var isWebsiteManagerPresented = false
     @Published var alwaysOnTop: Bool {
         didSet {
-            UserDefaults.standard.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)
+            defaults.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)
         }
     }
 
-    private var controllers: [SimulatedApp: WebViewController] = [:]
+    private let defaults: UserDefaults
+    private(set) var screens: [PocketScreen] = []
+    @Published private(set) var focusedScreenID = 0
+    @Published var screenLayout: ScreenLayout = .single {
+        didSet {
+            defaults.set(screenLayout.rawValue, forKey: "Pocket.screenLayout")
+            if !screenLayout.screenIDs.contains(focusedScreenID) { focusScreen(0) }
+        }
+    }
     @Published private(set) var websites: [SimulatedApp]
 
     private static let selectedAppKey = "Pocket.selectedApp"
@@ -302,8 +348,8 @@ final class PocketModel: ObservableObject {
         websites.filter(\.isEnabled)
     }
 
-    init() {
-        let defaults = UserDefaults.standard
+    init(defaults: UserDefaults = .standard, loadPages: Bool = true) {
+        self.defaults = defaults
         var loadedWebsites = Self.loadWebsites(from: defaults)
         if !loadedWebsites.contains(where: \.isEnabled) {
             loadedWebsites[0].isEnabled = true
@@ -332,24 +378,42 @@ final class PocketModel: ObservableObject {
         }
 
         alwaysOnTop = defaults.object(forKey: Self.alwaysOnTopKey) as? Bool ?? true
+        screens = (0..<4).map { id in
+            let fallback = id == 0 ? selectedApp : enabledApps[id % enabledApps.count]
+            let storedID = defaults.string(forKey: "Pocket.screen.\(id).app")
+            let app = enabledApps.first(where: { $0.id == storedID }) ?? fallback
+            return PocketScreen(id: id, app: app, defaults: defaults, loadPages: loadPages)
+        }
+        selectedApp = screens[0].selectedApp
+        screenLayout = defaults.string(forKey: "Pocket.screenLayout").flatMap(ScreenLayout.init(rawValue:)) ?? .single
         _ = controller(for: selectedApp)
     }
 
     func controller(for app: SimulatedApp) -> WebViewController {
-        if let controller = controllers[app] {
-            return controller
-        }
-
-        let controller = WebViewController(app: app)
-        controllers[app] = controller
-        controller.setPresentationMode(presentationMode)
-        return controller
+        screens[focusedScreenID].controller(for: app)
     }
 
-    func select(_ app: SimulatedApp) {
+    func focusScreen(_ id: Int) {
+        guard screens.indices.contains(id), focusedScreenID != id else { return }
+        focusedScreenID = id
+        selectedApp = screens[id].selectedApp
+    }
+
+    func select(_ app: SimulatedApp, in screenID: Int? = nil) {
         guard app.isEnabled else { return }
+        let id = screenID ?? focusedScreenID
+        guard screens.indices.contains(id) else { return }
+        focusScreen(id)
+        screens[id].select(app)
         selectedApp = app
-        _ = controller(for: app)
+        _ = screens[id].controller(for: app)
+    }
+
+    private func replaceSelection(of app: SimulatedApp, with replacement: SimulatedApp) {
+        for screen in screens where screen.selectedApp.id == app.id {
+            screen.select(replacement)
+        }
+        selectedApp = screens[focusedScreenID].selectedApp
     }
 
     func setEnabled(_ enabled: Bool, for app: SimulatedApp) {
@@ -362,9 +426,8 @@ final class PocketModel: ObservableObject {
         websites[index].isEnabled = enabled
         persistWebsites()
 
-        if selectedApp.id == app.id, !enabled,
-           let fallback = enabledApps.first {
-            select(fallback)
+        if !enabled, let fallback = enabledApps.first {
+            replaceSelection(of: app, with: fallback)
         }
     }
 
@@ -402,13 +465,8 @@ final class PocketModel: ObservableObject {
         websites[index] = updated
         persistWebsites()
 
-        controllers[app]?.webView.stopLoading()
-        controllers.removeValue(forKey: app)
-
-        if selectedApp.id == app.id {
-            selectedApp = updated
-            _ = controller(for: updated)
-        }
+        screens.forEach { $0.invalidate(app) }
+        replaceSelection(of: app, with: updated)
     }
 
     func removeWebsite(_ app: SimulatedApp) {
@@ -416,13 +474,11 @@ final class PocketModel: ObservableObject {
               let index = websites.firstIndex(where: { $0.id == app.id }) else { return }
 
         websites.remove(at: index)
-        controllers[app]?.webView.stopLoading()
-        controllers.removeValue(forKey: app)
+        screens.forEach { $0.invalidate(app) }
         persistWebsites()
 
-        if selectedApp.id == app.id,
-           let fallback = enabledApps.first {
-            select(fallback)
+        if let fallback = enabledApps.first {
+            replaceSelection(of: app, with: fallback)
         }
     }
 
@@ -438,6 +494,6 @@ final class PocketModel: ObservableObject {
 
     private func persistWebsites() {
         guard let data = try? JSONEncoder().encode(websites) else { return }
-        UserDefaults.standard.set(data, forKey: Self.websitesKey)
+        defaults.set(data, forKey: Self.websitesKey)
     }
 }

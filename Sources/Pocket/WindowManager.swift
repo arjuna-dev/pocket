@@ -9,11 +9,15 @@ final class WindowManager {
     private var lastContentSize: CGSize?
     private var currentMode: PresentationMode?
     private var currentOrientation: DeviceOrientation?
+    private var currentLayout: ScreenLayout = .single
+    private let defaults: UserDefaults
     private var resizeObserver: NSObjectProtocol?
     private var closeObserver: NSObjectProtocol?
     private var terminationObserver: NSObjectProtocol?
 
-    private init() {}
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    deinit { removeObservers() }
 
     func attach(window: NSWindow) {
         // SwiftUI resolves the bridge again for hover and other view updates.
@@ -38,6 +42,7 @@ final class WindowManager {
         for mode: PresentationMode,
         orientation: DeviceOrientation,
         scale: CGFloat = 1.0,
+        layout: ScreenLayout = .single,
         size: CGSize? = nil,
         animated: Bool = true,
         force: Bool = false
@@ -46,9 +51,13 @@ final class WindowManager {
 
         currentMode = mode
         currentOrientation = orientation
+        currentLayout = mode == .screen ? layout : .single
         configureChrome(for: mode, orientation: orientation, window: window)
 
-        let contentSize = size ?? mode.contentSize(for: orientation, scale: scale)
+        let contentSize = size ?? (mode == .screen
+            ? layout.contentSize(forPageSize: CGSize(width: orientation.screenSize.width * scale,
+                                                     height: orientation.screenSize.height * scale))
+            : mode.contentSize(for: orientation, scale: scale))
         if !force, let lastContentSize,
            abs(lastContentSize.width - contentSize.width) < 1,
            abs(lastContentSize.height - contentSize.height) < 1 {
@@ -56,10 +65,7 @@ final class WindowManager {
         }
 
         let oldFrame = window.frame
-        window.contentMinSize = mode.contentSize(
-            for: orientation,
-            scale: mode.minimumScale
-        )
+        window.contentMinSize = minimumContentSize(for: mode, orientation: orientation, layout: layout)
         window.setContentSize(contentSize)
 
         var newFrame = window.frame
@@ -69,23 +75,46 @@ final class WindowManager {
         lastContentSize = contentSize
     }
 
-    func ensureInitialSize(for mode: PresentationMode, orientation: DeviceOrientation) {
+    func ensureInitialSize(for mode: PresentationMode, orientation: DeviceOrientation, layout: ScreenLayout = .single) {
         guard lastContentSize == nil else { return }
-        restoreSize(for: mode, orientation: orientation, animated: false)
+        restoreSize(for: mode, orientation: orientation, layout: layout, animated: false)
     }
 
     func restoreSize(
         for mode: PresentationMode,
         orientation: DeviceOrientation,
+        layout: ScreenLayout = .single,
         animated: Bool = true
     ) {
         resize(
             for: mode,
             orientation: orientation,
-            size: savedContentSize(for: mode, orientation: orientation),
+            layout: layout,
+            size: savedContentSize(for: mode, orientation: orientation, layout: layout),
             animated: animated,
             force: true
         )
+    }
+
+    func changeScreenLayout(to layout: ScreenLayout) {
+        guard let window, currentMode == .screen, currentLayout != layout else { return }
+        // Read the actual window, not a stale cached size from before a drag.
+        let oldFrame = window.frame
+        let size = window.contentRect(forFrameRect: oldFrame).size
+        let pageSize = currentLayout.pageSize(in: size)
+        currentLayout = layout
+        window.contentMinSize = layout.contentSize(forPageSize: ScreenLayout.minimumPageSize)
+        window.setContentSize(layout.contentSize(forPageSize: pageSize))
+        var frame = window.frame
+        frame.origin = CGPoint(x: oldFrame.minX, y: oldFrame.maxY - frame.height)
+        window.setFrame(frame, display: true)
+        lastContentSize = window.contentRect(forFrameRect: window.frame).size
+        rememberCurrentWindowSize()
+    }
+
+    private func minimumContentSize(for mode: PresentationMode, orientation: DeviceOrientation, layout: ScreenLayout) -> CGSize {
+        mode == .screen ? layout.contentSize(forPageSize: ScreenLayout.minimumPageSize)
+            : mode.contentSize(for: orientation, scale: mode.minimumScale)
     }
 
     func setAlwaysOnTop(_ enabled: Bool) {
@@ -185,9 +214,16 @@ final class WindowManager {
         let contentSize = window.contentRect(forFrameRect: window.frame).size
         guard contentSize.width > 0, contentSize.height > 0 else { return }
 
+        lastContentSize = contentSize
+        if currentMode == .screen {
+            let page = currentLayout.pageSize(in: contentSize)
+            defaults.set(page.width, forKey: "Pocket.pageSize.\(currentOrientation.rawValue).width")
+            defaults.set(page.height, forKey: "Pocket.pageSize.\(currentOrientation.rawValue).height")
+            return
+        }
         let baseSize = currentMode.contentSize(for: currentOrientation)
         guard baseSize.width > 0 else { return }
-        UserDefaults.standard.set(
+        defaults.set(
             contentSize.width / baseSize.width,
             forKey: scaleKey(for: currentMode)
         )
@@ -195,9 +231,22 @@ final class WindowManager {
 
     private func savedContentSize(
         for mode: PresentationMode,
-        orientation: DeviceOrientation
+        orientation: DeviceOrientation,
+        layout: ScreenLayout
     ) -> CGSize? {
-        let scale = UserDefaults.standard.double(forKey: scaleKey(for: mode))
+        if mode == .screen {
+            let width = defaults.double(forKey: "Pocket.pageSize.\(orientation.rawValue).width")
+            let height = defaults.double(forKey: "Pocket.pageSize.\(orientation.rawValue).height")
+            if width > 0, height > 0 {
+                return layout.contentSize(forPageSize: CGSize(width: max(width, ScreenLayout.minimumPageSize.width),
+                    height: max(height, ScreenLayout.minimumPageSize.height)))
+            }
+            let storedScale = defaults.double(forKey: scaleKey(for: mode))
+            let scale = storedScale > 0 ? max(storedScale, mode.minimumScale) : 1
+            return layout.contentSize(forPageSize: CGSize(width: orientation.screenSize.width * scale,
+                height: orientation.screenSize.height * scale))
+        }
+        let scale = defaults.double(forKey: scaleKey(for: mode))
         guard scale > 0 else { return nil }
         return mode.contentSize(for: orientation, scale: scale)
     }
@@ -225,7 +274,13 @@ final class WindowManager {
         window.hasShadow = false
         window.backgroundColor = .clear
         window.isOpaque = false
-        window.contentAspectRatio = mode.contentSize(for: orientation)
+        if mode == .screen {
+            // Every screen is sized by one grid calculation. Allow free edge
+            // resizing without AppKit applying a stale single-screen ratio.
+            window.resizeIncrements = CGSize(width: 1, height: 1)
+        } else {
+            window.contentAspectRatio = mode.contentSize(for: orientation)
+        }
         setStandardWindowButtonsHidden(true, on: window)
     }
 
@@ -314,110 +369,6 @@ struct WindowDragHandle: NSViewRepresentable {
 
     func updateNSView(_ nsView: WindowDragView, context: Context) {
         nsView.showsIndicator = showsIndicator
-    }
-}
-
-final class HoverTrackingNSView: NSView {
-    var onHoverChanged: ((Bool) -> Void)?
-    private var mouseEventMonitor: Any?
-    private var isHovering = false
-
-    deinit {
-        removeMouseEventMonitor()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        removeMouseEventMonitor()
-
-        guard window != nil else {
-            updateHoverState(false)
-            return
-        }
-
-        mouseEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { [weak self] event in
-            self?.updateHoverState(for: event)
-            return event
-        }
-
-        updateHoverState(atScreenLocation: NSEvent.mouseLocation)
-    }
-
-    override func updateTrackingAreas() {
-        for trackingArea in trackingAreas {
-            removeTrackingArea(trackingArea)
-        }
-
-        addTrackingArea(
-            NSTrackingArea(
-                rect: .zero,
-                options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                owner: self,
-                userInfo: nil
-            )
-        )
-
-        super.updateTrackingAreas()
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        updateHoverState(atScreenLocation: NSEvent.mouseLocation)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        updateHoverState(atScreenLocation: NSEvent.mouseLocation)
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    private func removeMouseEventMonitor() {
-        if let mouseEventMonitor {
-            NSEvent.removeMonitor(mouseEventMonitor)
-        }
-        mouseEventMonitor = nil
-    }
-
-    private func updateHoverState(for event: NSEvent) {
-        guard let window,
-              let eventWindow = event.window,
-              eventWindow.windowNumber == window.windowNumber
-        else {
-            return
-        }
-
-        let screenLocation = window.convertPoint(toScreen: event.locationInWindow)
-        updateHoverState(window.frame.contains(screenLocation))
-    }
-
-    private func updateHoverState(atScreenLocation location: NSPoint) {
-        guard let window else {
-            updateHoverState(false)
-            return
-        }
-
-        updateHoverState(window.frame.contains(location))
-    }
-
-    private func updateHoverState(_ hovering: Bool) {
-        guard isHovering != hovering else { return }
-        isHovering = hovering
-        onHoverChanged?(hovering)
-    }
-}
-
-struct HoverTrackingView: NSViewRepresentable {
-    let onHoverChanged: (Bool) -> Void
-
-    func makeNSView(context: Context) -> HoverTrackingNSView {
-        let view = HoverTrackingNSView(frame: .zero)
-        view.onHoverChanged = onHoverChanged
-        return view
-    }
-
-    func updateNSView(_ nsView: HoverTrackingNSView, context: Context) {
-        nsView.onHoverChanged = onHoverChanged
     }
 }
 

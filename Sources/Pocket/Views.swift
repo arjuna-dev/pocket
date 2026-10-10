@@ -20,7 +20,7 @@ struct AppRootView: View {
             case .device:
                 CompactDeviceView(model: model, controller: selectedController)
             case .screen:
-                CompactScreenView(model: model, controller: selectedController)
+                MultiScreenView(model: model)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -29,10 +29,10 @@ struct AppRootView: View {
         .background(
             WindowBridge { window in
                 WindowManager.shared.attach(window: window)
-                WindowManager.shared.setAlwaysOnTop(model.alwaysOnTop)
                 WindowManager.shared.ensureInitialSize(
                     for: model.presentationMode,
-                    orientation: model.orientation
+                    orientation: model.orientation,
+                    layout: model.screenLayout
                 )
             }
             .frame(width: 1, height: 1)
@@ -42,6 +42,7 @@ struct AppRootView: View {
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: model.orientation,
+                layout: model.screenLayout,
                 animated: false
             )
         }
@@ -50,6 +51,7 @@ struct AppRootView: View {
             WindowManager.shared.restoreSize(
                 for: newMode,
                 orientation: model.orientation,
+                layout: model.screenLayout,
                 animated: true
             )
         }
@@ -57,8 +59,12 @@ struct AppRootView: View {
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: newOrientation,
+                layout: model.screenLayout,
                 animated: true
             )
+        }
+        .onChange(of: model.screenLayout) { _, layout in
+            WindowManager.shared.changeScreenLayout(to: layout)
         }
         .onChange(of: model.alwaysOnTop) { _, newValue in
             WindowManager.shared.setAlwaysOnTop(newValue)
@@ -73,7 +79,8 @@ struct AppRootView: View {
 struct CompactDeviceView: View {
     @ObservedObject var model: PocketModel
     @ObservedObject var controller: WebViewController
-    @State private var controlsVisible = false
+    @StateObject private var activity = ScreenChromeActivity()
+    private var controlsVisible: Bool { activity.screenID != nil }
 
     var body: some View {
         GeometryReader { proxy in
@@ -130,11 +137,10 @@ struct CompactDeviceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
         .overlay {
-            HoverTrackingView { isHovering in
-                guard controlsVisible != isHovering else { return }
-                withAnimation(.easeOut(duration: 0.16)) {
-                    controlsVisible = isHovering
-                }
+            ScreenActivityTrackingView { _ in
+                activity.activate(model.focusedScreenID)
+            } onExit: {
+                activity.leave()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityHidden(true)
@@ -142,206 +148,120 @@ struct CompactDeviceView: View {
     }
 }
 
-struct CompactScreenView: View {
-    @ObservedObject var model: PocketModel
-    @ObservedObject var controller: WebViewController
-    @State private var controlsVisible = false
-
-    var body: some View {
-        GeometryReader { proxy in
-            let screenSize = model.orientation.screenSize
-            let dragBarBaseHeight = model.presentationMode.screenDragBarHeight
-            let availableWidth = max(proxy.size.width, 1)
-            let controlsScale = CompactControls.scaleToFit(width: availableWidth)
-            let controlsBayHeight = CompactControls.bayHeight(for: availableWidth)
-            let topControlsBayHeight = CompactLayout.windowControlsBayHeight
-            let availableHeight = max(proxy.size.height - topControlsBayHeight - controlsBayHeight, 1)
-            let widthScale = availableWidth / screenSize.width
-            let dragBarHeight = min(dragBarBaseHeight * widthScale, max(availableHeight - 1, 0))
-            let screenHeight = max(availableHeight - dragBarHeight, 1)
-
-            VStack(spacing: 0) {
-                ZStack {
-                    if controlsVisible {
-                        CompactWindowControlsBar(controller: controller)
-                            .padding(.horizontal, 8)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: topControlsBayHeight)
-                .background(controlsVisible ? Color.pocketBackground : Color.clear)
-                .transaction { $0.animation = nil }
-
-                WindowDragHandle(showsIndicator: controlsVisible)
-                    .frame(width: availableWidth, height: dragBarHeight)
-                    .frame(maxWidth: .infinity)
-                    .help("Drag to move window")
-
-                ZStack {
-                    WebContent(controller: controller, cornerRadius: 0)
-                        .frame(width: availableWidth, height: screenHeight)
-                }
-
-                ZStack {
-                    if controlsVisible {
-                        CompactControls(
-                            model: model,
-                            scale: controlsScale
-                        )
-                            .transition(.opacity)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: controlsBayHeight)
-                .background(controlsVisible ? Color.pocketBackground : Color.clear)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.clear)
-        .overlay {
-            HoverTrackingView { isHovering in
-                guard controlsVisible != isHovering else { return }
-                withAnimation(.easeOut(duration: 0.16)) {
-                    controlsVisible = isHovering
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityHidden(true)
-        }
-    }
-}
-
+// Combined controls are used by the single mock-device presentation.
 struct CompactControls: View {
     @ObservedObject var model: PocketModel
     let scale: CGFloat
-
     private static let idealWidth = CompactLayout.controlsIdealWidth
 
-    static func scaleToFit(width: CGFloat) -> CGFloat {
-        CompactLayout.controlsScale(for: width)
-    }
-
-    static func bayHeight(for width: CGFloat) -> CGFloat {
-        CompactLayout.controlsBayHeight(for: width)
-    }
+    static func scaleToFit(width: CGFloat) -> CGFloat { CompactLayout.controlsScale(for: width) }
+    static func bayHeight(for width: CGFloat) -> CGFloat { CompactLayout.controlsBayHeight(for: width) }
 
     var body: some View {
         HStack(spacing: 5) {
-            Menu {
-                ForEach(model.enabledApps) { app in
-                    Button {
-                        model.select(app)
-                    } label: {
-                        HStack(spacing: 7) {
-                            ServiceIcon(app: app, size: 16)
-                            Text(app.title)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 7) {
-                    ServiceIcon(app: model.selectedApp, size: 16)
+            CompactWebsiteChooser(model: model, screen: model.screens[model.focusedScreenID])
+            CompactGeneralControls(model: model)
+        }
+        .frame(width: Self.idealWidth, height: 40)
+        .scaleEffect(scale)
+        .frame(width: Self.idealWidth * scale, height: 40 * scale)
+    }
+}
 
-                    Text(model.selectedApp.title)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: 112, alignment: .leading)
+struct CompactWebsiteChooser: View {
+    @ObservedObject var model: PocketModel
+    @ObservedObject var screen: PocketScreen
+    var height: CGFloat = 40
+
+    var body: some View {
+        Menu {
+            ForEach(model.enabledApps) { app in
+                Button { model.select(app, in: screen.id) } label: {
+                    Label(app.title, systemImage: app.symbolName)
                 }
             }
-            .menuStyle(.borderlessButton)
-            .help("Switch app")
+        } label: {
+            HStack(spacing: 7) {
+                ServiceIcon(app: screen.selectedApp, size: 16)
+                Text(screen.selectedApp.title)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 10)
+            .frame(maxWidth: .infinity)
+            .frame(height: height - 4)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .frame(maxWidth: .infinity)
+        .padding(.trailing, 8)
+        .frame(height: height)
+        .background(Capsule().fill(Color.pocketBackground))
+        .overlay { Capsule().stroke(Color.white.opacity(0.13), lineWidth: 1) }
+        .help("Choose website for this screen")
+        .accessibilityLabel("Website for screen \(screen.id + 1)")
+        .accessibilityValue(screen.selectedApp.title)
+    }
+}
 
+struct CompactGeneralControls: View {
+    @ObservedObject var model: PocketModel
+
+    var body: some View {
+        HStack(spacing: 5) {
+            CompactScreenLayoutPicker(model: model)
             CompactOrientationSwitcher(selection: $model.orientation)
-
             CompactAlwaysOnTopButton(model: model)
             CompactWebsiteManagerButton(model: model)
         }
         .padding(6)
         .background(Capsule().fill(Color.pocketBackground))
-        .clipShape(Capsule())
-        .overlay {
-            Capsule()
-                .stroke(Color.white.opacity(0.13), lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.35), radius: 14, y: 7)
-        .frame(width: Self.idealWidth, height: 40)
-        .scaleEffect(scale)
-        .frame(
-            width: Self.idealWidth * scale,
-            height: 40 * scale
-        )
+        .overlay { Capsule().stroke(Color.white.opacity(0.13), lineWidth: 1) }
+        .fixedSize()
+        .frame(height: 40)
     }
 }
 
 struct CompactWindowControlsBar: View {
-    @State private var areButtonIconsVisible = false
     @ObservedObject var controller: WebViewController
-
     var body: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 2) {
-                WindowActionButton(
-                    symbol: "xmark",
-                    color: Color(red: 1.0, green: 0.36, blue: 0.34),
-                    help: "Close Pocket",
-                    showsIcon: areButtonIconsVisible,
-                    action: WindowManager.shared.closeWindow
-                )
-
-                WindowActionButton(
-                    symbol: "minus",
-                    color: Color(red: 1.0, green: 0.75, blue: 0.25),
-                    help: "Minimize Pocket",
-                    showsIcon: areButtonIconsVisible,
-                    action: WindowManager.shared.minimizeWindow
-                )
-
-                WindowActionButton(
-                    symbol: "arrow.up.left.and.arrow.down.right",
-                    color: Color(red: 0.34, green: 0.82, blue: 0.45),
-                    help: "Zoom Pocket",
-                    showsIcon: areButtonIconsVisible,
-                    action: WindowManager.shared.zoomWindow
-                )
-            }
-            .onHover { areButtonIconsVisible = $0 }
-
+        HStack {
+            CompactWindowActions()
             Spacer(minLength: 0)
-
-            HStack(spacing: 3) {
-                CompactControlButton(
-                    symbol: "chevron.left",
-                    help: "Back",
-                    disabled: !controller.canGoBack
-                ) {
-                    controller.goBack()
-                }
-
-                CompactControlButton(
-                    symbol: "chevron.right",
-                    help: "Forward",
-                    disabled: !controller.canGoForward
-                ) {
-                    controller.goForward()
-                }
-
-                CompactControlButton(symbol: "arrow.clockwise", help: "Reload") {
-                    controller.load()
-                }
-            }
-            .padding(6)
-            .background(Capsule().fill(Color.pocketBackground))
-            .clipShape(Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(Color.white.opacity(0.13), lineWidth: 1)
-            }
-            .shadow(color: Color.black.opacity(0.35), radius: 14, y: 7)
+            CompactNavigationControls(controller: controller)
         }
-        .frame(maxWidth: .infinity)
         .frame(height: CompactLayout.windowControlsBayHeight)
+    }
+}
+
+struct CompactWindowActions: View {
+    @State private var areButtonIconsVisible = false
+    var body: some View {
+        HStack(spacing: 2) {
+            WindowActionButton(symbol: "xmark", color: Color(red: 1.0, green: 0.36, blue: 0.34),
+                help: "Close Pocket", showsIcon: areButtonIconsVisible, action: WindowManager.shared.closeWindow)
+            WindowActionButton(symbol: "minus", color: Color(red: 1.0, green: 0.75, blue: 0.25),
+                help: "Minimize Pocket", showsIcon: areButtonIconsVisible, action: WindowManager.shared.minimizeWindow)
+            WindowActionButton(symbol: "arrow.up.left.and.arrow.down.right", color: Color(red: 0.34, green: 0.82, blue: 0.45),
+                help: "Zoom Pocket", showsIcon: areButtonIconsVisible, action: WindowManager.shared.zoomWindow)
+        }
+        .onHover { areButtonIconsVisible = $0 }
+    }
+}
+
+struct CompactNavigationControls: View {
+    @ObservedObject var controller: WebViewController
+    var body: some View {
+        HStack(spacing: 3) {
+            CompactControlButton(symbol: "chevron.left", help: "Back", disabled: !controller.canGoBack, size: 24) { controller.goBack() }
+            CompactControlButton(symbol: "chevron.right", help: "Forward", disabled: !controller.canGoForward, size: 24) { controller.goForward() }
+            CompactControlButton(symbol: "arrow.clockwise", help: "Reload", size: 24) { controller.load() }
+        }
+        .padding(3)
+        .background(Capsule().fill(Color.pocketBackground))
+        .overlay { Capsule().stroke(Color.white.opacity(0.13), lineWidth: 1) }
     }
 }
 
@@ -375,27 +295,16 @@ private struct WindowActionButton: View {
 
 struct CompactWebsiteManagerButton: View {
     @ObservedObject var model: PocketModel
-
     var body: some View {
-        Button {
-            model.isWebsiteManagerPresented = true
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "slider.horizontal.3")
-                Text("Manage sites")
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-                .font(.system(size: 11, weight: .medium, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.78))
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(Color.white.opacity(0.06))
-                .clipShape(Capsule())
+        Button { model.isWebsiteManagerPresented = true } label: {
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Manage websites")
-        .accessibilityLabel("Manage sites")
+        .accessibilityLabel("Settings")
     }
 }
 
@@ -403,6 +312,7 @@ struct CompactControlButton: View {
     let symbol: String
     let help: String
     var disabled = false
+    var size: CGFloat = 28
     let action: () -> Void
 
     var body: some View {
@@ -410,7 +320,8 @@ struct CompactControlButton: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(disabled ? Color.white.opacity(0.68) : Color.white)
-                .frame(width: 28, height: 28)
+                .frame(width: size, height: size)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -439,23 +350,24 @@ struct CompactOrientationSwitcher: View {
 
 struct CompactAlwaysOnTopButton: View {
     @ObservedObject var model: PocketModel
-
     var body: some View {
-        Button {
-            model.alwaysOnTop.toggle()
-        } label: {
-            Image(systemName: model.alwaysOnTop ? "pin.fill" : "pin")
-                .font(.system(size: 12, weight: .bold))
+        Button { model.alwaysOnTop.toggle() } label: {
+            HStack(spacing: 5) {
+                Text("Pin")
+                Image(systemName: model.alwaysOnTop ? "pin.fill" : "pin")
+            }
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(model.alwaysOnTop ? Color.white : Color.white.opacity(0.82))
-                .frame(width: 28, height: 28)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
                 .background {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(model.alwaysOnTop ? Color.white.opacity(0.13) : Color.clear)
+                    RoundedRectangle(cornerRadius: 7).fill(model.alwaysOnTop ? Color.white.opacity(0.13) : Color.clear)
                 }
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(model.alwaysOnTop ? "Always on Top: On" : "Always on Top: Off")
-        .accessibilityLabel("Always on Top")
+        .accessibilityLabel("Pin")
         .accessibilityValue(model.alwaysOnTop ? "On" : "Off")
     }
 }
@@ -1005,7 +917,7 @@ struct WebContent: View {
     private var content: some View {
         ZStack(alignment: .top) {
             WebViewRepresentable(controller: controller)
-                .id(controller.app.id)
+                .id(ObjectIdentifier(controller))
 
             if controller.isLoading {
                 VStack(spacing: 0) {
@@ -1036,17 +948,48 @@ struct WebContent: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.pocketBackground)
     }
 }
 
 struct WebViewRepresentable: NSViewRepresentable {
     @ObservedObject var controller: WebViewController
 
-    func makeNSView(context: Context) -> WKWebView {
-        controller.webView
+    func makeNSView(context: Context) -> WebViewHost {
+        WebViewHost(webView: controller.webView)
     }
 
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
+    func updateNSView(_ nsView: WebViewHost, context: Context) {}
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: WebViewHost, context: Context) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height else { return nil }
+        return CGSize(width: width, height: height)
+    }
+}
+
+// SwiftUI sizes the tile, and this host pins WebKit to that exact rectangle.
+// Website intrinsic content sizes must never influence the grid's geometry.
+final class WebViewHost: NSView {
+    let webView: WKWebView
+    override var isFlipped: Bool { true }
+
+    init(webView: WKWebView) {
+        self.webView = webView
+        super.init(frame: .zero)
+        webView.removeFromSuperview()
+        webView.translatesAutoresizingMaskIntoConstraints = true
+        webView.autoresizingMask = [.width, .height]
+        addSubview(webView)
+        webView.frame = bounds
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layout() {
+        super.layout()
+        if webView.frame != bounds { webView.frame = bounds }
+    }
 }
 
 struct ErrorOverlay: View {

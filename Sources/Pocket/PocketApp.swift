@@ -26,6 +26,15 @@ struct PocketApp: App {
 
                 }
 
+                Section("Screens") {
+                    ForEach(ScreenLayout.allCases) { layout in
+                        Button(layout.title) {
+                            model.screenLayout = layout
+                            model.presentationMode = .screen
+                        }
+                    }
+                }
+
                 Section("Orientation") {
                     Button("Portrait") {
                         model.orientation = .portrait
