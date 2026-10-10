@@ -1,37 +1,58 @@
 import AppKit
 
-enum ScreenLayout: String, CaseIterable, Identifiable {
-    case single, sideBySide, stacked, grid
+struct ScreenLayout: RawRepresentable, Hashable, Identifiable, CaseIterable {
+    let columns: Int
+    let rows: Int
 
+    init(columns: Int, rows: Int) {
+        precondition((1...4).contains(columns) && (1...4).contains(rows))
+        self.columns = columns
+        self.rows = rows
+    }
+
+    init?(rawValue: String) {
+        switch rawValue {
+        case "single": self.init(columns: 1, rows: 1)
+        case "sideBySide": self.init(columns: 2, rows: 1)
+        case "stacked": self.init(columns: 1, rows: 2)
+        case "grid": self.init(columns: 2, rows: 2)
+        default:
+            let values = rawValue.split(separator: "x").compactMap { Int($0) }
+            guard values.count == 2, (1...4).contains(values[0]), (1...4).contains(values[1]) else { return nil }
+            self.init(columns: values[0], rows: values[1])
+        }
+    }
+
+    var rawValue: String { "\(columns)x\(rows)" }
     var id: String { rawValue }
-    var title: String {
-        switch self {
-        case .single: return "One screen"
-        case .sideBySide: return "Two side by side"
-        case .stacked: return "Two stacked"
-        case .grid: return "Four screens"
-        }
-    }
-    var symbolName: String {
-        switch self {
-        case .single: return "rectangle.fill"
-        case .sideBySide: return "rectangle.split.2x1.fill"
-        case .stacked: return "rectangle.split.1x2.fill"
-        case .grid: return "rectangle.split.2x2.fill"
-        }
-    }
-    var iconImage: NSImage { Self.icons[self]! }
-    private static let icons: [ScreenLayout: NSImage] = Dictionary(uniqueKeysWithValues: allCases.map { layout in
-        let image = NSImage(size: CGSize(width: 16, height: 16), flipped: false) { _ in
-            for cell in 0..<4 {
-                NSColor.white.withAlphaComponent(layout.filledIconCells.contains(cell) ? 1 : 0.22).setFill()
-                NSBezierPath(rect: CGRect(x: (cell % 2) * 9, y: (1 - cell / 2) * 9, width: 7, height: 7)).fill()
+    var title: String { "\(columns) columns by \(rows) rows" }
+    var compactTitle: String { "\(columns) x \(rows)" }
+    var screenCount: Int { columns * rows }
+    var iconImage: NSImage {
+        NSImage(size: CGSize(width: 16, height: 16), flipped: false) { _ in
+            let edge: CGFloat = 15
+            let gap: CGFloat = columns == 1 && rows == 1 ? 0 : 0.75
+            let cellWidth = (edge - gap * CGFloat(columns - 1)) / CGFloat(columns)
+            let cellHeight = (edge - gap * CGFloat(rows - 1)) / CGFloat(rows)
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    NSColor.white.setFill()
+                    NSBezierPath(rect: CGRect(x: 0.5 + CGFloat(column) * (cellWidth + gap),
+                        y: 0.5 + CGFloat(row) * (cellHeight + gap), width: cellWidth, height: cellHeight)).fill()
+                }
             }
             return true
         }
-        image.isTemplate = true
-        return (layout, image)
-    })
+    }
+
+    static let allCases: [ScreenLayout] = (1...4).flatMap { rows in
+        (1...4).map { columns in ScreenLayout(columns: columns, rows: rows) }
+    }
+    static let defaultQuickLayouts: [ScreenLayout] = [single, sideBySide, stacked, grid]
+    static let single = ScreenLayout(columns: 1, rows: 1)
+    static let sideBySide = ScreenLayout(columns: 2, rows: 1)
+    static let stacked = ScreenLayout(columns: 1, rows: 2)
+    static let grid = ScreenLayout(columns: 2, rows: 2)
 
     static let topBarHeight: CGFloat = 40
     static let bottomBarHeight: CGFloat = 48
@@ -47,17 +68,7 @@ enum ScreenLayout: String, CaseIterable, Identifiable {
                height: max(size.height - Self.topBarHeight - Self.bottomBarHeight, 1) / CGFloat(rows))
     }
 
-    var columns: Int { self == .sideBySide || self == .grid ? 2 : 1 }
-    var rows: Int { self == .stacked || self == .grid ? 2 : 1 }
-    var screenIDs: [Int] { Array(0..<(columns * rows)) }
-    var filledIconCells: Set<Int> {
-        switch self {
-        case .single: return [0]
-        case .sideBySide: return [0, 1]
-        case .stacked: return [0, 2]
-        case .grid: return [0, 1, 2, 3]
-        }
-    }
+    var screenIDs: [Int] { Array(0..<screenCount) }
 
     func frames(in size: CGSize, topBarHeight: CGFloat = Self.topBarHeight, bottomBarHeight: CGFloat = Self.bottomBarHeight) -> [CGRect] {
         let width = max(size.width, 1) / CGFloat(columns)

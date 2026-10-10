@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 struct SimulatedApp: Identifiable, Hashable, Codable {
     let id: String
@@ -330,6 +331,14 @@ final class PocketModel: ObservableObject {
     private let defaults: UserDefaults
     private(set) var screens: [PocketScreen] = []
     @Published private(set) var focusedScreenID = 0
+    @Published var favoriteScreenLayouts: [ScreenLayout] {
+        didSet {
+            let selected = Set(favoriteScreenLayouts)
+            let normalized = ScreenLayout.allCases.filter { selected.contains($0) }
+            if normalized != favoriteScreenLayouts { favoriteScreenLayouts = normalized }
+            defaults.set(normalized.map(\.rawValue), forKey: Self.favoriteLayoutsKey)
+        }
+    }
     @Published var screenLayout: ScreenLayout = .single {
         didSet {
             defaults.set(screenLayout.rawValue, forKey: "Pocket.screenLayout")
@@ -343,6 +352,7 @@ final class PocketModel: ObservableObject {
     private static let orientationKey = "Pocket.orientation"
     private static let alwaysOnTopKey = "Pocket.alwaysOnTop"
     private static let websitesKey = "Pocket.websites"
+    private static let favoriteLayoutsKey = "Pocket.screenLayout.favorites"
 
     var enabledApps: [SimulatedApp] {
         websites.filter(\.isEnabled)
@@ -378,7 +388,13 @@ final class PocketModel: ObservableObject {
         }
 
         alwaysOnTop = defaults.object(forKey: Self.alwaysOnTopKey) as? Bool ?? true
-        screens = (0..<4).map { id in
+        let savedLayouts = (defaults.stringArray(forKey: Self.favoriteLayoutsKey) ?? [])
+            .compactMap(ScreenLayout.init(rawValue:))
+        let savedLayoutSet = Set(savedLayouts)
+        favoriteScreenLayouts = savedLayoutSet.isEmpty
+            ? ScreenLayout.defaultQuickLayouts
+            : ScreenLayout.allCases.filter { savedLayoutSet.contains($0) }
+        screens = (0..<16).map { id in
             let fallback = id == 0 ? selectedApp : enabledApps[id % enabledApps.count]
             let storedID = defaults.string(forKey: "Pocket.screen.\(id).app")
             let app = enabledApps.first(where: { $0.id == storedID }) ?? fallback
@@ -387,6 +403,53 @@ final class PocketModel: ObservableObject {
         selectedApp = screens[0].selectedApp
         screenLayout = defaults.string(forKey: "Pocket.screenLayout").flatMap(ScreenLayout.init(rawValue:)) ?? .single
         _ = controller(for: selectedApp)
+    }
+
+    func toggleFavoriteScreenLayout(_ layout: ScreenLayout) {
+        if favoriteScreenLayouts.contains(layout) {
+            guard favoriteScreenLayouts.count > 1 else { return }
+            favoriteScreenLayouts.removeAll { $0 == layout }
+        } else {
+            favoriteScreenLayouts.append(layout)
+        }
+    }
+
+    @MainActor
+    func installBrowserCookies(_ cookies: [HTTPCookie]) async -> (cookieCount: Int, websiteNames: [String]) {
+        var importedCount = 0
+        var importedWebsiteNames: [String] = []
+
+        for website in websites {
+            guard let host = website.url.host?.lowercased(),
+                  let identifier = UUID(uuidString: website.dataStoreKey) else { continue }
+            let matchingCookies = cookies.filter { cookie in
+                let domain = cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+                let relatedDomains: [String]
+                switch website.id {
+                case "youtube": relatedDomains = ["google.com"]
+                case "x": relatedDomains = ["twitter.com"]
+                default: relatedDomains = []
+                }
+                let allowedDomains = [host] + relatedDomains
+                return allowedDomains.contains { allowedHost in
+                    allowedHost == domain || allowedHost.hasSuffix("." + domain)
+                }
+            }
+            guard !matchingCookies.isEmpty else { continue }
+
+            let cookieStore = WKWebsiteDataStore(forIdentifier: identifier).httpCookieStore
+            for cookie in matchingCookies {
+                await withCheckedContinuation { continuation in
+                    cookieStore.setCookie(cookie) {
+                        continuation.resume()
+                    }
+                }
+            }
+            importedCount += matchingCookies.count
+            importedWebsiteNames.append(website.title)
+        }
+
+        return (importedCount, importedWebsiteNames)
     }
 
     func controller(for app: SimulatedApp) -> WebViewController {

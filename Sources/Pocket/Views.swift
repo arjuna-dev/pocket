@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 private extension Color {
@@ -397,6 +398,7 @@ struct WebsiteManagerSheet: View {
     @ObservedObject var model: PocketModel
     @Environment(\.dismiss) private var dismiss
     @State private var editorTarget: WebsiteEditorTarget?
+    @State private var isBrowserImportPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -447,6 +449,13 @@ struct WebsiteManagerSheet: View {
                 Spacer(minLength: 12)
 
                 Button {
+                    isBrowserImportPresented = true
+                } label: {
+                    Label("Import from Browser", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
                     editorTarget = .new
                 } label: {
                     Label("Add Website", systemImage: "plus")
@@ -463,6 +472,292 @@ struct WebsiteManagerSheet: View {
         .sheet(item: $editorTarget) { target in
             WebsiteEditorSheet(model: model, website: target.website)
         }
+        .sheet(isPresented: $isBrowserImportPresented) {
+            BrowserCookieImportSheet(model: model)
+        }
+    }
+}
+
+private struct BrowserCookieImportSheet: View {
+    @ObservedObject var model: PocketModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var profiles = BrowserCookieProfile.discover()
+    @State private var selectedProfileID: String?
+    @State private var isImporting = false
+    @State private var message: String?
+    @State private var isError = false
+    @State private var savedCredentials = PocketCredentialVault.loadAll()
+    @State private var isShowingSavedCredentials = false
+
+    private var selectedProfile: BrowserCookieProfile? {
+        profiles.first { $0.id == selectedProfileID } ?? profiles.first
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Import from Browser")
+                    .font(.system(size: 20, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text("Choose a browser profile to bring its sign-in cookies into Pocket.")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.pocketMuted)
+            }
+
+            if profiles.isEmpty {
+                ContentUnavailableView(
+                    "No Session Profiles Found",
+                    systemImage: "safari",
+                    description: Text("You can still import saved passwords from a browser CSV export.")
+                )
+                .frame(maxWidth: .infinity)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("SOURCE PROFILE")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(0.7)
+                        .foregroundStyle(Color.pocketMuted)
+
+                    Picker("Browser profile", selection: $selectedProfileID) {
+                        ForEach(profiles) { profile in
+                            Text("\(profile.browserName) - \(profile.name)")
+                                .tag(Optional(profile.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .disabled(isImporting)
+                }
+
+                Label {
+                    Text("Cookies are copied only to Pocket websites with a matching domain. Each website keeps its own data store.")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.pocketMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "info.circle")
+                        .foregroundStyle(Color.pocketMuted)
+                }
+            }
+
+            Divider().overlay(Color.white.opacity(0.1))
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Saved Passwords")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Text("Import from this Chromium profile or a browser CSV export.")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.pocketMuted)
+                }
+                Spacer(minLength: 4)
+                Button("Import CSV…") { importPasswordCSV() }
+                    .buttonStyle(.bordered)
+                    .disabled(isImporting)
+                Button("Import Passwords") { importSavedPasswords() }
+                    .buttonStyle(.bordered)
+                    .disabled(selectedProfile == nil || isImporting)
+            }
+
+            if !savedCredentials.isEmpty {
+                Button {
+                    isShowingSavedCredentials.toggle()
+                } label: {
+                    Label(
+                        "\(isShowingSavedCredentials ? "Hide" : "View") Imported Passwords (\(savedCredentials.count))",
+                        systemImage: isShowingSavedCredentials ? "chevron.up" : "key.horizontal"
+                    )
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                }
+                .buttonStyle(.plain)
+
+                if isShowingSavedCredentials {
+                    ScrollView {
+                        LazyVStack(spacing: 6) {
+                            ForEach(savedCredentials) { credential in
+                                ImportedCredentialRow(credential: credential) {
+                                    PocketCredentialVault.delete(credential)
+                                    savedCredentials = PocketCredentialVault.loadAll()
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 115)
+                }
+            }
+
+            if let message {
+                Text(message)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(isError ? Color.orange : Color.green)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button {
+                    refreshProfiles()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 24, height: 22)
+                }
+                .buttonStyle(.borderless)
+                .help("Rescan browser profiles")
+                .disabled(isImporting)
+
+                Button {
+                    importSelectedProfile()
+                } label: {
+                    if isImporting {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 115, height: 20)
+                    } else {
+                        Text("Import Cookies")
+                            .frame(width: 115, height: 20)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 0.78, green: 0.31, blue: 0.20))
+                .disabled(selectedProfile == nil || isImporting)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 500)
+        .background(Color.pocketBackground)
+        .preferredColorScheme(.dark)
+        .onAppear { refreshProfiles() }
+    }
+
+    private func refreshProfiles() {
+        profiles = BrowserCookieProfile.discover()
+        if !profiles.contains(where: { $0.id == selectedProfileID }) {
+            selectedProfileID = profiles.first?.id
+        }
+    }
+
+    private func importSelectedProfile() {
+        guard let profile = selectedProfile else { return }
+        isImporting = true
+        message = nil
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try BrowserCookieImporter.readCookies(from: profile)
+                }.value
+                let installed = await model.installBrowserCookies(result.cookies)
+                if installed.cookieCount == 0 {
+                    message = "Read \(result.cookies.count) cookies, but none matched a Pocket website."
+                    isError = true
+                } else {
+                    let names = installed.websiteNames.joined(separator: ", ")
+                    let skipped = result.skippedEncryptedCookies > 0
+                        ? " \(result.skippedEncryptedCookies) encrypted cookies could not be read."
+                        : ""
+                    message = "Imported \(installed.cookieCount) cookies for \(names).\(skipped)"
+                    isError = false
+                }
+            } catch {
+                message = error.localizedDescription
+                isError = true
+            }
+            isImporting = false
+        }
+    }
+
+    private func importSavedPasswords() {
+        guard let profile = selectedProfile else { return }
+        switch profile.kind {
+        case .chromium:
+            isImporting = true
+            message = nil
+            Task {
+                do {
+                    let credentials = try await Task.detached(priority: .userInitiated) {
+                        try BrowserCredentialImporter.readChromiumPasswords(from: profile)
+                    }.value
+                    let count = try PocketCredentialVault.save(credentials)
+                    savedCredentials = PocketCredentialVault.loadAll()
+                    message = "Imported \(count) saved passwords into Pocket's Keychain-backed password list."
+                    isError = false
+                } catch {
+                    message = error.localizedDescription
+                    isError = true
+                }
+                isImporting = false
+            }
+        case .firefox:
+            importPasswordCSV()
+        }
+    }
+
+    private func importPasswordCSV() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.allowsOtherFileTypes = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose a passwords CSV exported from your browser."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        isImporting = true
+        message = nil
+        Task {
+            do {
+                let credentials = try await Task.detached(priority: .userInitiated) {
+                    try BrowserCredentialImporter.readPasswordCSV(from: url)
+                }.value
+                let count = try PocketCredentialVault.save(credentials)
+                savedCredentials = PocketCredentialVault.loadAll()
+                message = "Imported \(count) saved passwords into Pocket's Keychain-backed password list."
+                isError = false
+            } catch {
+                message = error.localizedDescription
+                isError = true
+            }
+            isImporting = false
+        }
+    }
+}
+
+private struct ImportedCredentialRow: View {
+    let credential: ImportedBrowserCredential
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(credential.websiteName)
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.white)
+                Text(credential.username)
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.pocketMuted)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            Button("Copy user") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(credential.username, forType: .string)
+            }
+            .help("Copy username")
+            Button("Copy password") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(credential.password, forType: .string)
+            }
+            .help("Copy password")
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help("Delete imported password")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
