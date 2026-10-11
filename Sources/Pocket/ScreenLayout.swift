@@ -89,15 +89,16 @@ struct ScreenLayout: RawRepresentable, Hashable, Identifiable, CaseIterable {
 // Positioning and hover routing share the same geometry. The hover region
 // includes the gap below both controls, and the gap between their capsules.
 enum ScreenControlGeometry {
+    static let navigationWidth: CGFloat = 111
     static func navigation(above page: CGRect) -> CGRect {
-        CGRect(x: page.maxX - 92, y: page.minY - 35, width: 84, height: 30)
+        CGRect(x: page.maxX - navigationWidth - 8, y: page.minY - 35, width: navigationWidth, height: 30)
     }
 
     static func website(above page: CGRect) -> CGRect {
         let navigation = navigation(above: page)
         // Leave room for the shared traffic lights above the first screen.
         let windowButtonsWidth: CGFloat = page.minX < 0.5 && page.minY <= ScreenLayout.topBarHeight + 0.5 ? 64 : 0
-        let width = min(160, max(page.width - 106 - windowButtonsWidth, 1))
+        let width = min(160, max(page.width - navigationWidth - 22 - windowButtonsWidth, 1))
         return CGRect(x: navigation.minX - 6 - width, y: navigation.minY, width: width, height: navigation.height)
     }
 

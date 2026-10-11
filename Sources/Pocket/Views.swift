@@ -12,14 +12,17 @@ struct AppRootView: View {
     @ObservedObject var model: PocketModel
     @ObservedObject private var chat: PocketChatController
     @StateObject private var activity: ScreenChromeActivity
+    @StateObject private var expansion: ScreenExpansionController
     @State private var isPointerInside = false
     private let windowManager: WindowManager
 
-    init(model: PocketModel, activity: ScreenChromeActivity? = nil, windowManager: WindowManager = .shared) {
+    init(model: PocketModel, activity: ScreenChromeActivity? = nil, windowManager: WindowManager = .shared,
+         expansion: ScreenExpansionController? = nil) {
         self.model = model
         self.chat = model.chat
         self.windowManager = windowManager
         self._activity = StateObject(wrappedValue: activity ?? ScreenChromeActivity())
+        self._expansion = StateObject(wrappedValue: expansion ?? ScreenExpansionController(model: model))
     }
 
     private var selectedController: WebViewController? {
@@ -79,6 +82,7 @@ struct AppRootView: View {
         .background(
             WindowBridge { window in
                 windowManager.attach(window: window)
+                expansion.attach(to: window)
                 windowManager.ensureInitialSize(
                     for: model.presentationMode,
                     orientation: model.orientation,
@@ -121,7 +125,9 @@ struct AppRootView: View {
         }
         .onChange(of: model.alwaysOnTop) { _, newValue in
             windowManager.setAlwaysOnTop(newValue)
+            expansion.updateWindowLevel()
         }
+        .onChange(of: model.expandedScreenID) { _, _ in expansion.synchronize() }
         .onChange(of: chat.isComposerVisible) { _, visible in
             windowManager.setChatComposerVisible(visible)
             if visible { activity.activate(model.focusedScreenID) }
@@ -342,21 +348,26 @@ struct CompactWindowActions: View {
 
 struct CompactNavigationControls: View {
     let controller: WebViewController?
+    var isExpanded = false
+    var toggleExpansion: (() -> Void)? = nil
     var body: some View {
         if let controller {
-            ActiveNavigationControls(controller: controller)
+            ActiveNavigationControls(controller: controller, isExpanded: isExpanded, toggleExpansion: toggleExpansion)
         } else {
             NavigationControlsContent(canGoBack: false, canGoForward: false, isOff: true,
-                goBack: {}, goForward: {}, reload: {})
+                goBack: {}, goForward: {}, reload: {}, isExpanded: isExpanded, toggleExpansion: toggleExpansion)
         }
     }
 }
 
 private struct ActiveNavigationControls: View {
     @ObservedObject var controller: WebViewController
+    let isExpanded: Bool
+    let toggleExpansion: (() -> Void)?
     var body: some View {
         NavigationControlsContent(canGoBack: controller.canGoBack, canGoForward: controller.canGoForward,
-            isOff: false, goBack: controller.goBack, goForward: controller.goForward, reload: { controller.load() })
+            isOff: false, goBack: controller.goBack, goForward: controller.goForward, reload: { controller.load() },
+            isExpanded: isExpanded, toggleExpansion: toggleExpansion)
     }
 }
 
@@ -367,12 +378,19 @@ private struct NavigationControlsContent: View {
     let goBack: () -> Void
     let goForward: () -> Void
     let reload: () -> Void
+    let isExpanded: Bool
+    let toggleExpansion: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 3) {
             CompactControlButton(symbol: "chevron.left", help: "Back", disabled: !canGoBack, size: 24, action: goBack)
             CompactControlButton(symbol: "chevron.right", help: "Forward", disabled: !canGoForward, size: 24, action: goForward)
             CompactControlButton(symbol: "arrow.clockwise", help: "Reload", disabled: isOff, size: 24, action: reload)
+            if let toggleExpansion {
+                CompactControlButton(symbol: "viewfinder", help: isExpanded ? "Return to grid (Escape)" : "Expand screen",
+                    size: 24, action: toggleExpansion)
+                    .accessibilityLabel(isExpanded ? "Return to grid" : "Expand screen")
+            }
         }
         .padding(3)
         .background(Capsule().fill(Color.pocketBackground))
@@ -1397,6 +1415,9 @@ final class WebViewHost: NSView {
 
     override func layout() {
         super.layout()
+        // A retained host may lay out once more after its live web view has
+        // moved into the expanded window. Only the current host may resize it.
+        guard webView.superview === self else { return }
         if webView.frame != bounds { webView.frame = bounds }
     }
 }

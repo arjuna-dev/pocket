@@ -10,7 +10,7 @@ xcrun swiftc -parse-as-library -swift-version 5 \
     Sources/Pocket/PocketChatController.swift Sources/Pocket/PocketChatViews.swift \
     Sources/Pocket/ScreenLayout.swift Sources/Pocket/ScreenActivity.swift \
     Sources/Pocket/BrowserCookieImporter.swift Sources/Pocket/BrowserCredentialImporter.swift \
-    Sources/Pocket/MultiScreenView.swift Sources/Pocket/Views.swift \
+    Sources/Pocket/MultiScreenView.swift Sources/Pocket/Views.swift Sources/Pocket/ScreenExpansion.swift \
     Sources/Pocket/WindowManager.swift Tests/MultiScreenTests.swift \
     -o "$test_temp_dir/multi-screen-tests"
 "$test_temp_dir/multi-screen-tests"

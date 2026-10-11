@@ -322,6 +322,7 @@ final class PocketModel: ObservableObject {
     @Published var presentationMode: PresentationMode {
         didSet {
             defaults.set(presentationMode.rawValue, forKey: Self.presentationModeKey)
+            if presentationMode != .screen { expandedScreenID = nil }
         }
     }
 
@@ -341,6 +342,9 @@ final class PocketModel: ObservableObject {
     private let defaults: UserDefaults
     private(set) var screens: [PocketScreen] = []
     @Published private(set) var focusedScreenID = 0
+    // Expansion is a temporary presentation of the same live screen, not a
+    // persisted layout or a second browser tab.
+    @Published private(set) var expandedScreenID: Int?
     @Published var favoriteScreenLayouts: [ScreenLayout] {
         didSet {
             let selected = Set(favoriteScreenLayouts)
@@ -353,6 +357,7 @@ final class PocketModel: ObservableObject {
         didSet {
             defaults.set(screenLayout.rawValue, forKey: "Pocket.screenLayout")
             if !screenLayout.screenIDs.contains(focusedScreenID) { focusScreen(0) }
+            if let id = expandedScreenID, !screenLayout.screenIDs.contains(id) { expandedScreenID = nil }
         }
     }
     @Published private(set) var websites: [SimulatedApp]
@@ -483,6 +488,14 @@ final class PocketModel: ObservableObject {
         focusedScreenID = id
         selectedApp = screens[id].selectedApp
     }
+
+    func expandScreen(_ id: Int) {
+        guard presentationMode == .screen, screenLayout.screenIDs.contains(id) else { return }
+        focusScreen(id)
+        expandedScreenID = id
+    }
+
+    func collapseScreen() { expandedScreenID = nil }
 
     func select(_ app: SimulatedApp?, in screenID: Int? = nil) {
         guard app?.isEnabled != false else { return }
