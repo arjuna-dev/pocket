@@ -26,6 +26,15 @@ struct PocketApp: App {
 
                 }
 
+                Section("Screens") {
+                    ForEach(ScreenLayout.allCases) { layout in
+                        Button(layout.title) {
+                            model.screenLayout = layout
+                            model.presentationMode = .screen
+                        }
+                    }
+                }
+
                 Section("Orientation") {
                     Button("Portrait") {
                         model.orientation = .portrait
@@ -40,12 +49,12 @@ struct PocketApp: App {
 
                 Section("Navigation") {
                     Button("Back") {
-                        model.controller(for: model.selectedApp).goBack()
+                        model.selectedController?.goBack()
                     }
                     .keyboardShortcut("[", modifiers: [.command])
 
                     Button("Forward") {
-                        model.controller(for: model.selectedApp).goForward()
+                        model.selectedController?.goForward()
                     }
                     .keyboardShortcut("]", modifiers: [.command])
                 }

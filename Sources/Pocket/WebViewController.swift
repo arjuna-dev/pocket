@@ -24,9 +24,13 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     @Published private(set) var canGoBack = false
     @Published private(set) var canGoForward = false
 
+    var onURLChanged: ((URL?) -> Void)?
+    private var urlObservation: NSKeyValueObservation?
     private var progressObservation: NSKeyValueObservation?
     private var canGoBackObservation: NSKeyValueObservation?
     private var canGoForwardObservation: NSKeyValueObservation?
+    private var popups: [ObjectIdentifier: WebPopupController] = [:]
+    private var lastProcessRecovery: TimeInterval?
     private static let minimumViewportSize = CGSize(width: 480, height: 300)
 
     init(app: SimulatedApp, websiteDataStore: WKWebsiteDataStore? = nil, loadImmediately: Bool = true) {
@@ -51,7 +55,6 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         webView.allowsBackForwardNavigationGestures = true
         webView.customUserAgent = app.customUserAgent
         webView.pageZoom = 1.0
-        webView.setValue(false, forKey: "drawsBackground")
         self.webView = webView
 
         super.init()
@@ -61,6 +64,9 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         }
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
+            self?.onURLChanged?(webView.url)
+        }
         progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] webView, _ in
             self?.loadingProgress = webView.estimatedProgress
         }
@@ -77,15 +83,18 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     }
 
     deinit {
+        urlObservation?.invalidate()
         progressObservation?.invalidate()
         canGoBackObservation?.invalidate()
         canGoForwardObservation?.invalidate()
+        popups.values.forEach { $0.close() }
     }
 
-    func load() {
+    func load(url: URL? = nil) {
         errorMessage = nil
         isLoading = true
-        webView.load(URLRequest(url: app.url))
+        lastProcessRecovery = nil
+        webView.load(URLRequest(url: url ?? webView.url ?? app.url))
         syncHistoryState()
     }
 
@@ -120,12 +129,14 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        guard (error as NSError).code != NSURLErrorCancelled || (error as NSError).domain != NSURLErrorDomain else { return }
         isLoading = false
         errorMessage = userFacingMessage(for: error)
         syncHistoryState()
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        guard (error as NSError).code != NSURLErrorCancelled || (error as NSError).domain != NSURLErrorDomain else { return }
         isLoading = false
         errorMessage = userFacingMessage(for: error)
         syncHistoryState()
@@ -137,10 +148,38 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        if navigationAction.targetFrame == nil {
-            webView.load(navigationAction.request)
+        guard navigationAction.targetFrame == nil else { return nil }
+        // Return a real child view with WebKit's supplied configuration so
+        // popup sign-in retains window.opener and the original page stays put.
+        let popup = WebPopupController(configuration: configuration, parent: webView.window,
+            app: app, features: windowFeatures)
+        let key = ObjectIdentifier(popup.webView)
+        popup.onClose = { [weak self] in self?.popups.removeValue(forKey: key) }
+        popups[key] = popup
+        return popup.webView
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let lastProcessRecovery, now - lastProcessRecovery < 30 {
+            isLoading = false
+            errorMessage = "This page stopped responding. Try reloading it."
+            return
         }
-        return nil
+        lastProcessRecovery = now
+        errorMessage = nil
+        isLoading = true
+        if webView.url != nil { webView.reload() } else { webView.load(URLRequest(url: app.url)) }
+    }
+
+    static func restoredURL(_ savedURL: URL?, for app: SimulatedApp) -> URL {
+        guard let savedURL else { return app.url }
+        // Older builds replaced X with Google's popup-only sign-in document.
+        // Those URLs cannot restore a session without the missing opener.
+        if savedURL.host == "accounts.google.com", savedURL.path.hasPrefix("/gsi/") {
+            return app.url
+        }
+        return savedURL
     }
 
     private func applyViewportZoom() {
@@ -431,4 +470,44 @@ final class WebViewController: NSObject, ObservableObject, WKNavigationDelegate,
         }, true);
     })();
     """#
+}
+
+private final class WebPopupController: NSObject, WKUIDelegate, WKNavigationDelegate, NSWindowDelegate {
+    let webView: WKWebView
+    private let window: NSWindow
+    var onClose: (() -> Void)?
+
+    init(configuration: WKWebViewConfiguration, parent: NSWindow?, app: SimulatedApp, features: WKWindowFeatures) {
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        let width = min(max(features.width?.doubleValue ?? 500, 320), 900)
+        let height = min(max(features.height?.doubleValue ?? 650, 300), 900)
+        window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: height),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        super.init()
+        webView.customUserAgent = app.customUserAgent
+        webView.uiDelegate = self
+        webView.navigationDelegate = self
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.title = "\(app.title) - New window"
+        window.contentView = webView
+        if let parent {
+            parent.addChildWindow(window, ordered: .above)
+            window.setFrameOrigin(CGPoint(x: parent.frame.midX - window.frame.width / 2,
+                                          y: parent.frame.midY - window.frame.height / 2))
+        } else { window.center() }
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func close() { window.close() }
+    func webViewDidClose(_ webView: WKWebView) { close() }
+    func windowWillClose(_ notification: Notification) {
+        window.parent?.removeChildWindow(window)
+        webView.stopLoading()
+        onClose?()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let host = webView.url?.host { window.title = "\(webView.title ?? "Website") - \(host)" }
+    }
 }
