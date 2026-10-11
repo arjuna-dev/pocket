@@ -10,27 +10,76 @@ private extension Color {
 
 struct AppRootView: View {
     @ObservedObject var model: PocketModel
+    @ObservedObject private var chat: PocketChatController
+    @StateObject private var activity: ScreenChromeActivity
+    @State private var isPointerInside = false
+    private let windowManager: WindowManager
+
+    init(model: PocketModel, activity: ScreenChromeActivity? = nil, windowManager: WindowManager = .shared) {
+        self.model = model
+        self.chat = model.chat
+        self.windowManager = windowManager
+        self._activity = StateObject(wrappedValue: activity ?? ScreenChromeActivity())
+    }
 
     private var selectedController: WebViewController? {
         model.selectedController
     }
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+          Group {
             switch model.presentationMode {
             case .device:
-                CompactDeviceView(model: model, controller: selectedController)
+                CompactDeviceView(model: model, controller: selectedController, activity: activity)
             case .screen:
-                MultiScreenView(model: model)
+                MultiScreenView(model: model, activity: activity)
             }
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          if chat.isComposerVisible {
+              PocketChatComposer(model: model, chat: chat, activity: activity)
+          }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
         .background(Color.clear)
+        .overlay {
+            GeometryReader { proxy in
+                ScreenActivityTrackingView { point in
+                    isPointerInside = true
+                    let pageHeight = proxy.size.height - (chat.isComposerVisible ? PocketChatController.composerHeight : 0)
+                    if model.presentationMode == .screen, point.y < pageHeight {
+                        let frames = model.screenLayout.frames(in: CGSize(width: proxy.size.width, height: pageHeight))
+                        let id = ScreenControlGeometry.screenID(at: point, frames: frames,
+                            activeScreenID: activity.screenID, focusedScreenID: model.focusedScreenID)
+                        model.focusScreen(id)
+                        activity.activate(id)
+                    } else {
+                        activity.activate(model.focusedScreenID)
+                    }
+                } onExit: {
+                    isPointerInside = false
+                    activity.leave()
+                }
+                .accessibilityHidden(true)
+            }
+            // Match the pages' full-window coordinate space, including the
+            // transparent native titlebar. A safe-area inset here shifts the
+            // hover bridge away from the visible screen controls.
+            .ignoresSafeArea()
+        }
+        .overlay(alignment: .top) {
+            if let toast = chat.toast {
+                PocketChatToastView(toast: toast) { chat.dismissToast() }
+                    .padding(.horizontal, 16)
+                    .padding(.top, ScreenLayout.topBarHeight + 8)
+            }
+        }
         .background(
             WindowBridge { window in
-                WindowManager.shared.attach(window: window)
-                WindowManager.shared.ensureInitialSize(
+                windowManager.attach(window: window)
+                windowManager.ensureInitialSize(
                     for: model.presentationMode,
                     orientation: model.orientation,
                     layout: model.screenLayout
@@ -39,8 +88,11 @@ struct AppRootView: View {
             .frame(width: 1, height: 1)
         )
         .onAppear {
+            activity.hold(chat.isWorking)
+            if chat.isWorking { activity.activate(model.focusedScreenID) }
             selectedController?.setPresentationMode(model.presentationMode)
-            WindowManager.shared.restoreSize(
+            windowManager.setChatComposerVisible(chat.isComposerVisible)
+            windowManager.restoreSize(
                 for: model.presentationMode,
                 orientation: model.orientation,
                 layout: model.screenLayout,
@@ -49,7 +101,7 @@ struct AppRootView: View {
         }
         .onChange(of: model.presentationMode) { _, newMode in
             selectedController?.setPresentationMode(newMode)
-            WindowManager.shared.restoreSize(
+            windowManager.restoreSize(
                 for: newMode,
                 orientation: model.orientation,
                 layout: model.screenLayout,
@@ -57,7 +109,7 @@ struct AppRootView: View {
             )
         }
         .onChange(of: model.orientation) { _, newOrientation in
-            WindowManager.shared.restoreSize(
+            windowManager.restoreSize(
                 for: model.presentationMode,
                 orientation: newOrientation,
                 layout: model.screenLayout,
@@ -65,13 +117,29 @@ struct AppRootView: View {
             )
         }
         .onChange(of: model.screenLayout) { _, layout in
-            WindowManager.shared.changeScreenLayout(to: layout)
+            windowManager.changeScreenLayout(to: layout)
         }
         .onChange(of: model.alwaysOnTop) { _, newValue in
-            WindowManager.shared.setAlwaysOnTop(newValue)
+            windowManager.setAlwaysOnTop(newValue)
         }
+        .onChange(of: chat.isComposerVisible) { _, visible in
+            windowManager.setChatComposerVisible(visible)
+            if visible { activity.activate(model.focusedScreenID) }
+        }
+        .onChange(of: chat.isWorking) { _, working in
+            activity.hold(working)
+            if working {
+                activity.activate(model.focusedScreenID)
+            } else if !isPointerInside {
+                activity.leave()
+            }
+        }
+        .task { await chat.refreshAccount() }
         .sheet(isPresented: $model.isWebsiteManagerPresented) {
             WebsiteManagerSheet(model: model)
+        }
+        .sheet(isPresented: $chat.isLoginPresented) {
+            PocketChatLoginSheet(chat: chat)
         }
         .preferredColorScheme(.dark)
     }
@@ -80,7 +148,14 @@ struct AppRootView: View {
 struct CompactDeviceView: View {
     @ObservedObject var model: PocketModel
     let controller: WebViewController?
-    @StateObject private var activity = ScreenChromeActivity()
+    @StateObject private var activity: ScreenChromeActivity
+    private let tracksPointer: Bool
+
+    init(model: PocketModel, controller: WebViewController?, activity: ScreenChromeActivity? = nil) {
+        self.model = model; self.controller = controller
+        self._activity = StateObject(wrappedValue: activity ?? ScreenChromeActivity())
+        self.tracksPointer = activity == nil
+    }
     private var controlsVisible: Bool { activity.screenID != nil }
 
     var body: some View {
@@ -138,13 +213,15 @@ struct CompactDeviceView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.clear)
         .overlay {
-            ScreenActivityTrackingView { _ in
+            if tracksPointer {
+              ScreenActivityTrackingView { _ in
                 activity.activate(model.focusedScreenID)
             } onExit: {
                 activity.leave()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityHidden(true)
+            }
         }
     }
 }
@@ -226,6 +303,7 @@ struct CompactGeneralControls: View {
             CompactOrientationSwitcher(selection: $model.orientation)
             CompactAlwaysOnTopButton(model: model)
             CompactWebsiteManagerButton(model: model)
+            PocketChatButton(chat: model.chat)
         }
         .padding(6)
         .background(Capsule().fill(Color.pocketBackground))

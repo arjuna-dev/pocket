@@ -2,7 +2,14 @@ import SwiftUI
 
 struct MultiScreenView: View {
     @ObservedObject var model: PocketModel
-    @StateObject private var activity = ScreenChromeActivity()
+    @StateObject private var activity: ScreenChromeActivity
+    private let tracksPointer: Bool
+
+    init(model: PocketModel, activity: ScreenChromeActivity? = nil) {
+        self.model = model
+        self._activity = StateObject(wrappedValue: activity ?? ScreenChromeActivity())
+        self.tracksPointer = activity == nil
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -48,13 +55,15 @@ struct MultiScreenView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .overlay {
-                ScreenActivityTrackingView { point in
+                if tracksPointer {
+                  ScreenActivityTrackingView { point in
                     let id = ScreenControlGeometry.screenID(at: point, frames: frames,
                         activeScreenID: activity.screenID, focusedScreenID: model.focusedScreenID)
                     model.focusScreen(id)
                     activity.activate(id)
                 } onExit: { activity.leave() }
                 .accessibilityHidden(true)
+                }
             }
         }
         .onChange(of: model.screenLayout) { _, _ in activity.activate(model.focusedScreenID) }

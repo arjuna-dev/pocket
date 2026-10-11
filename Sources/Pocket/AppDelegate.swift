@@ -53,4 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // when Pocket is selected so another app's window cannot cover it.
         panel?.makeKeyAndOrderFront(nil)
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        PocketModel.shared.chat.shutdown()
+    }
 }
