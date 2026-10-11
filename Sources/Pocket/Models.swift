@@ -207,7 +207,7 @@ enum DeviceOrientation: String, CaseIterable, Identifiable {
 }
 
 enum CompactLayout {
-    static let controlsIdealWidth: CGFloat = 350
+    static let controlsIdealWidth: CGFloat = 386
     static let controlsBaseHeight: CGFloat = 40
     static let windowControlsBayHeight: CGFloat = 40
     static let controlsHorizontalInset: CGFloat = 8
@@ -278,6 +278,12 @@ final class PocketScreen: ObservableObject, Identifiable {
         selectedApp.map { controller(for: $0) }
     }
 
+    var currentURL: String? {
+        guard let app = selectedApp else { return nil }
+        return controllers[app.id]?.webView.url?.absoluteString
+            ?? defaults.string(forKey: "Pocket.screen.\(id).url.\(app.id)") ?? app.urlString
+    }
+
     func select(_ app: SimulatedApp?) {
         selectedApp = app
         defaults.set(app?.id ?? "off", forKey: "Pocket.screen.\(id).app")
@@ -305,6 +311,7 @@ final class PocketScreen: ObservableObject, Identifiable {
 
 final class PocketModel: ObservableObject {
     static let shared = PocketModel()
+    let chat: PocketChatController
 
     @Published private(set) var selectedApp: SimulatedApp? {
         didSet {
@@ -361,8 +368,9 @@ final class PocketModel: ObservableObject {
         websites.filter(\.isEnabled)
     }
 
-    init(defaults: UserDefaults = .standard, loadPages: Bool = true) {
+    init(defaults: UserDefaults = .standard, loadPages: Bool = true, chat: PocketChatController? = nil) {
         self.defaults = defaults
+        self.chat = chat ?? PocketChatController()
         var loadedWebsites = Self.loadWebsites(from: defaults)
         if !loadedWebsites.contains(where: \.isEnabled) {
             loadedWebsites[0].isEnabled = true
@@ -523,6 +531,15 @@ final class PocketModel: ObservableObject {
         websites.append(website)
         persistWebsites()
         select(website)
+    }
+
+    func registerWebsite(url: URL) -> SimulatedApp {
+        if let existing = enabledApps.first(where: { $0.url.host == url.host }) { return existing }
+        let website = SimulatedApp.custom(title: url.host ?? "Website", subtitle: "Website",
+            urlString: url.absoluteString, symbolName: "globe")
+        websites.append(website)
+        persistWebsites()
+        return website
     }
 
     func updateWebsite(

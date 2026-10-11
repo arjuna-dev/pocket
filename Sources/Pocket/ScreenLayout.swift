@@ -103,12 +103,15 @@ enum ScreenControlGeometry {
 
     static func hoverRegion(above page: CGRect) -> CGRect {
         let controls = navigation(above: page).union(website(above: page))
-        return CGRect(x: controls.minX - 3, y: controls.minY,
-                      width: controls.width + 6, height: page.minY - controls.minY + 1)
+        return CGRect(x: controls.minX - 3, y: controls.minY - 3,
+                      width: controls.width + 6, height: page.minY - controls.minY + 4)
     }
 
     static func screenID(at point: CGPoint, frames: [CGRect], activeScreenID: Int?, focusedScreenID: Int) -> Int {
-        if let id = activeScreenID, frames.indices.contains(id), hoverRegion(above: frames[id]).contains(point) {
+        // After idle hiding, moving over the last screen's capsule must reveal
+        // that screen again, rather than selecting the page underneath it.
+        let id = activeScreenID ?? focusedScreenID
+        if frames.indices.contains(id), hoverRegion(above: frames[id]).contains(point) {
             return id
         }
         return frames.firstIndex(where: { $0.contains(point) }) ?? focusedScreenID

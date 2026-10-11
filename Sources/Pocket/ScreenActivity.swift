@@ -5,7 +5,7 @@ import SwiftUI
 // rebuilding the SwiftUI tree or scheduling a timer for every mouse event.
 final class ScreenChromeActivity: ObservableObject {
     @Published private(set) var screenID: Int?
-    private var lastActivity = ProcessInfo.processInfo.systemUptime
+    private var hideDeadline = ProcessInfo.processInfo.systemUptime
     private var hideWork: DispatchWorkItem?
     private var held = false
     private var menuTracking = false
@@ -32,9 +32,19 @@ final class ScreenChromeActivity: ObservableObject {
     }
 
     func activate(_ id: Int) {
-        lastActivity = ProcessInfo.processInfo.systemUptime
+        extendDeadline(for: id, duration: timeout)
+    }
+
+    func activateForTyping(_ id: Int) {
+        extendDeadline(for: id, duration: timeout * 2)
+    }
+
+    private func extendDeadline(for id: Int, duration: TimeInterval) {
+        let now = ProcessInfo.processInfo.systemUptime
+        // Mouse movement must not shorten a recent chat edit's longer deadline.
+        hideDeadline = max(hideDeadline, now + duration)
         if screenID != id { screenID = id }
-        if hideWork == nil { scheduleHide(after: timeout) }
+        if hideWork == nil { scheduleHide(after: hideDeadline - now) }
     }
 
     func hold(_ value: Bool) {
@@ -46,6 +56,7 @@ final class ScreenChromeActivity: ObservableObject {
         guard !held, !menuTracking else { return }
         hideWork?.cancel()
         hideWork = nil
+        hideDeadline = 0
         screenID = nil
     }
 
@@ -53,7 +64,7 @@ final class ScreenChromeActivity: ObservableObject {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.hideWork = nil
-            let remaining = self.timeout - (ProcessInfo.processInfo.systemUptime - self.lastActivity)
+            let remaining = self.hideDeadline - ProcessInfo.processInfo.systemUptime
             if self.held || self.menuTracking {
                 self.scheduleHide(after: self.timeout)
             } else if remaining > 0 {
@@ -123,7 +134,12 @@ final class ScreenActivityNSView: NSView {
         onActivity?(convert(event.locationInWindow, from: nil))
     }
 
-    override func mouseExited(with event: NSEvent) { onExit?() }
+    override func mouseExited(with event: NSEvent) {
+        // Tracking areas can be replaced during layout or chrome updates.
+        // Only a pointer outside this full-window view is an actual exit.
+        guard !bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onExit?()
+    }
 
     private func removeMonitor() {
         if let monitor { NSEvent.removeMonitor(monitor) }
