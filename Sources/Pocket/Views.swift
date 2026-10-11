@@ -11,8 +11,8 @@ private extension Color {
 struct AppRootView: View {
     @ObservedObject var model: PocketModel
 
-    private var selectedController: WebViewController {
-        model.controller(for: model.selectedApp)
+    private var selectedController: WebViewController? {
+        model.selectedController
     }
 
     var body: some View {
@@ -39,7 +39,7 @@ struct AppRootView: View {
             .frame(width: 1, height: 1)
         )
         .onAppear {
-            selectedController.setPresentationMode(model.presentationMode)
+            selectedController?.setPresentationMode(model.presentationMode)
             WindowManager.shared.restoreSize(
                 for: model.presentationMode,
                 orientation: model.orientation,
@@ -48,7 +48,7 @@ struct AppRootView: View {
             )
         }
         .onChange(of: model.presentationMode) { _, newMode in
-            selectedController.setPresentationMode(newMode)
+            selectedController?.setPresentationMode(newMode)
             WindowManager.shared.restoreSize(
                 for: newMode,
                 orientation: model.orientation,
@@ -79,7 +79,7 @@ struct AppRootView: View {
 
 struct CompactDeviceView: View {
     @ObservedObject var model: PocketModel
-    @ObservedObject var controller: WebViewController
+    let controller: WebViewController?
     @StateObject private var activity = ScreenChromeActivity()
     private var controlsVisible: Bool { activity.screenID != nil }
 
@@ -176,6 +176,10 @@ struct CompactWebsiteChooser: View {
 
     var body: some View {
         Menu {
+            Button { model.select(nil, in: screen.id) } label: {
+                Label("Off", systemImage: "power")
+            }
+            Divider()
             ForEach(model.enabledApps) { app in
                 Button { model.select(app, in: screen.id) } label: {
                     Label(app.title, systemImage: app.symbolName)
@@ -183,8 +187,14 @@ struct CompactWebsiteChooser: View {
             }
         } label: {
             HStack(spacing: 7) {
-                ServiceIcon(app: screen.selectedApp, size: 16)
-                Text(screen.selectedApp.title)
+                if let app = screen.selectedApp {
+                    ServiceIcon(app: app, size: 16)
+                } else {
+                    Image(systemName: "power")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.secondary)
+                }
+                Text(screen.selectedApp?.title ?? "Off")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -203,7 +213,7 @@ struct CompactWebsiteChooser: View {
         .overlay { Capsule().stroke(Color.white.opacity(0.13), lineWidth: 1) }
         .help("Choose website for this screen")
         .accessibilityLabel("Website for screen \(screen.id + 1)")
-        .accessibilityValue(screen.selectedApp.title)
+        .accessibilityValue(screen.selectedApp?.title ?? "Off")
     }
 }
 
@@ -226,7 +236,7 @@ struct CompactGeneralControls: View {
 }
 
 struct CompactWindowControlsBar: View {
-    @ObservedObject var controller: WebViewController
+    let controller: WebViewController?
     var body: some View {
         HStack {
             CompactWindowActions()
@@ -253,12 +263,38 @@ struct CompactWindowActions: View {
 }
 
 struct CompactNavigationControls: View {
+    let controller: WebViewController?
+    var body: some View {
+        if let controller {
+            ActiveNavigationControls(controller: controller)
+        } else {
+            NavigationControlsContent(canGoBack: false, canGoForward: false, isOff: true,
+                goBack: {}, goForward: {}, reload: {})
+        }
+    }
+}
+
+private struct ActiveNavigationControls: View {
     @ObservedObject var controller: WebViewController
     var body: some View {
+        NavigationControlsContent(canGoBack: controller.canGoBack, canGoForward: controller.canGoForward,
+            isOff: false, goBack: controller.goBack, goForward: controller.goForward, reload: { controller.load() })
+    }
+}
+
+private struct NavigationControlsContent: View {
+    let canGoBack: Bool
+    let canGoForward: Bool
+    let isOff: Bool
+    let goBack: () -> Void
+    let goForward: () -> Void
+    let reload: () -> Void
+
+    var body: some View {
         HStack(spacing: 3) {
-            CompactControlButton(symbol: "chevron.left", help: "Back", disabled: !controller.canGoBack, size: 24) { controller.goBack() }
-            CompactControlButton(symbol: "chevron.right", help: "Forward", disabled: !controller.canGoForward, size: 24) { controller.goForward() }
-            CompactControlButton(symbol: "arrow.clockwise", help: "Reload", size: 24) { controller.load() }
+            CompactControlButton(symbol: "chevron.left", help: "Back", disabled: !canGoBack, size: 24, action: goBack)
+            CompactControlButton(symbol: "chevron.right", help: "Forward", disabled: !canGoForward, size: 24, action: goForward)
+            CompactControlButton(symbol: "arrow.clockwise", help: "Reload", disabled: isOff, size: 24, action: reload)
         }
         .padding(3)
         .background(Capsule().fill(Color.pocketBackground))
@@ -427,7 +463,7 @@ struct WebsiteManagerSheet: View {
                     ForEach(model.websites) { website in
                         WebsiteManagerRow(
                             website: website,
-                            isSelected: model.selectedApp.id == website.id,
+                            isSelected: model.selectedApp?.id == website.id,
                             onToggle: { model.setEnabled($0, for: website) },
                             onEdit: { editorTarget = .edit(website) },
                             onRemove: { model.removeWebsite(website) }
@@ -1061,8 +1097,8 @@ private extension View {
 }
 
 struct DeviceFrame: View {
-    let app: SimulatedApp
-    @ObservedObject var controller: WebViewController
+    let app: SimulatedApp?
+    let controller: WebViewController?
     let orientation: DeviceOrientation
 
     var body: some View {
@@ -1074,7 +1110,7 @@ struct DeviceFrame: View {
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(app.title) in \(orientation.title.lowercased()) device mode")
+        .accessibilityLabel("\(app?.title ?? "Off") in \(orientation.title.lowercased()) device mode")
     }
 
     private var portraitBody: some View {
@@ -1086,7 +1122,7 @@ struct DeviceFrame: View {
             VStack(spacing: 0) {
                 DeviceStatusBar()
 
-                WebContent(controller: controller, cornerRadius: 25)
+                ScreenContent(controller: controller, cornerRadius: 25)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 HomeIndicator()
@@ -1110,7 +1146,7 @@ struct DeviceFrame: View {
             HStack(spacing: 0) {
                 LandscapeStatusBar()
 
-                WebContent(controller: controller, cornerRadius: 25)
+                ScreenContent(controller: controller, cornerRadius: 25)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 LandscapeHomeIndicator()

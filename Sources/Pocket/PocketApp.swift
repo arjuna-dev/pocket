@@ -49,12 +49,12 @@ struct PocketApp: App {
 
                 Section("Navigation") {
                     Button("Back") {
-                        model.controller(for: model.selectedApp).goBack()
+                        model.selectedController?.goBack()
                     }
                     .keyboardShortcut("[", modifiers: [.command])
 
                     Button("Forward") {
-                        model.controller(for: model.selectedApp).goForward()
+                        model.selectedController?.goForward()
                     }
                     .keyboardShortcut("]", modifiers: [.command])
                 }

@@ -68,8 +68,44 @@ private extension Color {
 private struct ScreenPageView: View {
     @ObservedObject var screen: PocketScreen
     var body: some View {
-        WebContent(controller: screen.controller(for: screen.selectedApp), cornerRadius: 0).clipped()
+        ScreenContent(controller: screen.selectedController, cornerRadius: 0).clipped()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct ScreenContent: View {
+    let controller: WebViewController?
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        if let controller {
+            WebContent(controller: controller, cornerRadius: cornerRadius)
+        } else {
+            EmptyScreenView()
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        }
+    }
+}
+
+struct EmptyScreenView: View {
+    private static let icon = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+        .flatMap { NSImage(contentsOf: $0) } ?? NSApp.applicationIconImage!
+
+    var body: some View {
+        GeometryReader { proxy in
+            Image(nsImage: Self.icon)
+                .resizable()
+                .scaledToFit()
+                .saturation(0)
+                .contrast(0.65)
+                .opacity(0.14)
+                .shadow(color: .white.opacity(0.08), radius: 1, y: -1)
+                .frame(width: min(140, min(proxy.size.width, proxy.size.height) * 0.4))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Color(white: 0.045))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Screen off. Choose a website using this screen's menu.")
     }
 }
 
@@ -81,7 +117,7 @@ private struct ScreenSpecificControls: View {
     var body: some View {
         let navigation = ScreenControlGeometry.navigation(above: page)
         let website = ScreenControlGeometry.website(above: page)
-        CompactNavigationControls(controller: screen.controller(for: screen.selectedApp))
+        CompactNavigationControls(controller: screen.selectedController)
             .frame(width: navigation.width, height: navigation.height)
             .position(x: navigation.midX, y: navigation.midY)
         CompactWebsiteChooser(model: model, screen: screen, height: website.height)

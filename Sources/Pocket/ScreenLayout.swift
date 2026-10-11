@@ -28,22 +28,27 @@ struct ScreenLayout: RawRepresentable, Hashable, Identifiable, CaseIterable {
     var title: String { "\(columns) columns by \(rows) rows" }
     var compactTitle: String { "\(columns) x \(rows)" }
     var screenCount: Int { columns * rows }
-    var iconImage: NSImage {
-        NSImage(size: CGSize(width: 16, height: 16), flipped: false) { _ in
-            let edge: CGFloat = 15
-            let gap: CGFloat = columns == 1 && rows == 1 ? 0 : 0.75
-            let cellWidth = (edge - gap * CGFloat(columns - 1)) / CGFloat(columns)
-            let cellHeight = (edge - gap * CGFloat(rows - 1)) / CGFloat(rows)
-            for row in 0..<rows {
-                for column in 0..<columns {
-                    NSColor.white.setFill()
-                    NSBezierPath(rect: CGRect(x: 0.5 + CGFloat(column) * (cellWidth + gap),
-                        y: 0.5 + CGFloat(row) * (cellHeight + gap), width: cellWidth, height: cellHeight)).fill()
+    var iconGridDimension: Int { max(2, columns, rows) }
+    var iconImage: NSImage { Self.icons[self]! }
+    private static let icons: [ScreenLayout: NSImage] = Dictionary(uniqueKeysWithValues: allCases.map { layout in
+        let image = NSImage(size: CGSize(width: 16, height: 16), flipped: false) { _ in
+            let dimension = layout.iconGridDimension
+            let gap: CGFloat = dimension == 2 ? 2 : 1
+            let cellSize = (16 - gap * CGFloat(dimension - 1)) / CGFloat(dimension)
+            for row in 0..<dimension {
+                for column in 0..<dimension {
+                    let isActive = column < layout.columns && row < layout.rows
+                    NSColor.white.withAlphaComponent(isActive ? 1 : 0.22).setFill()
+                    NSBezierPath(rect: CGRect(x: CGFloat(column) * (cellSize + gap),
+                        y: CGFloat(dimension - 1 - row) * (cellSize + gap),
+                        width: cellSize, height: cellSize)).fill()
                 }
             }
             return true
         }
-    }
+        image.isTemplate = true
+        return (layout, image)
+    })
 
     static let allCases: [ScreenLayout] = (1...4).flatMap { rows in
         (1...4).map { columns in ScreenLayout(columns: columns, rows: rows) }

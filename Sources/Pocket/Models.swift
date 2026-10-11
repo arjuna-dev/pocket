@@ -262,22 +262,25 @@ extension PresentationMode {
 // cookie store across screens, but never share a WKWebView or navigation history.
 final class PocketScreen: ObservableObject, Identifiable {
     let id: Int
-    @Published private(set) var selectedApp: SimulatedApp
+    @Published private(set) var selectedApp: SimulatedApp?
     private var controllers: [String: WebViewController] = [:]
     private let defaults: UserDefaults
     private let loadPages: Bool
 
-    init(id: Int, app: SimulatedApp, defaults: UserDefaults, loadPages: Bool) {
+    init(id: Int, app: SimulatedApp?, defaults: UserDefaults, loadPages: Bool) {
         self.id = id
         self.selectedApp = app
         self.defaults = defaults
         self.loadPages = loadPages
-        defaults.set(app.id, forKey: "Pocket.screen.\(id).app")
     }
 
-    func select(_ app: SimulatedApp) {
+    var selectedController: WebViewController? {
+        selectedApp.map { controller(for: $0) }
+    }
+
+    func select(_ app: SimulatedApp?) {
         selectedApp = app
-        defaults.set(app.id, forKey: "Pocket.screen.\(id).app")
+        defaults.set(app?.id ?? "off", forKey: "Pocket.screen.\(id).app")
     }
 
     func controller(for app: SimulatedApp) -> WebViewController {
@@ -303,9 +306,9 @@ final class PocketScreen: ObservableObject, Identifiable {
 final class PocketModel: ObservableObject {
     static let shared = PocketModel()
 
-    @Published var selectedApp: SimulatedApp {
+    @Published private(set) var selectedApp: SimulatedApp? {
         didSet {
-            defaults.set(selectedApp.id, forKey: Self.selectedAppKey)
+            defaults.set(selectedApp?.id ?? "off", forKey: Self.selectedAppKey)
         }
     }
 
@@ -370,7 +373,7 @@ final class PocketModel: ObservableObject {
            let storedApp = loadedWebsites.first(where: { $0.id == rawValue && $0.isEnabled }) {
             selectedApp = storedApp
         } else {
-            selectedApp = loadedWebsites.first(where: \.isEnabled) ?? SimulatedApp.telegram
+            selectedApp = nil
         }
 
         if let rawValue = defaults.string(forKey: Self.presentationModeKey),
@@ -394,15 +397,22 @@ final class PocketModel: ObservableObject {
         favoriteScreenLayouts = savedLayoutSet.isEmpty
             ? ScreenLayout.defaultQuickLayouts
             : ScreenLayout.allCases.filter { savedLayoutSet.contains($0) }
+        let hasExplicitSelections = defaults.bool(forKey: "Pocket.screenSelectionsExplicit")
         screens = (0..<16).map { id in
-            let fallback = id == 0 ? selectedApp : enabledApps[id % enabledApps.count]
             let storedID = defaults.string(forKey: "Pocket.screen.\(id).app")
-            let app = enabledApps.first(where: { $0.id == storedID }) ?? fallback
-            return PocketScreen(id: id, app: app, defaults: defaults, loadPages: loadPages)
+            // Older builds preassigned every screen. Preserve pages that were
+            // opened, but discard unused preassignments instead of loading them.
+            let wasOpened = storedID.map { defaults.string(forKey: "Pocket.screen.\(id).url.\($0)") != nil } ?? false
+            let restoreSelection = hasExplicitSelections || id == 0 || wasOpened
+            let app = restoreSelection ? enabledApps.first(where: { $0.id == storedID }) : nil
+            let restoredApp = app ?? (id == 0 && storedID == nil ? selectedApp : nil)
+            defaults.set(restoredApp?.id ?? "off", forKey: "Pocket.screen.\(id).app")
+            return PocketScreen(id: id, app: restoredApp, defaults: defaults, loadPages: loadPages)
         }
+        defaults.set(true, forKey: "Pocket.screenSelectionsExplicit")
         selectedApp = screens[0].selectedApp
         screenLayout = defaults.string(forKey: "Pocket.screenLayout").flatMap(ScreenLayout.init(rawValue:)) ?? .single
-        _ = controller(for: selectedApp)
+        _ = selectedController
     }
 
     func toggleFavoriteScreenLayout(_ layout: ScreenLayout) {
@@ -456,24 +466,28 @@ final class PocketModel: ObservableObject {
         screens[focusedScreenID].controller(for: app)
     }
 
+    var selectedController: WebViewController? {
+        screens[focusedScreenID].selectedController
+    }
+
     func focusScreen(_ id: Int) {
         guard screens.indices.contains(id), focusedScreenID != id else { return }
         focusedScreenID = id
         selectedApp = screens[id].selectedApp
     }
 
-    func select(_ app: SimulatedApp, in screenID: Int? = nil) {
-        guard app.isEnabled else { return }
+    func select(_ app: SimulatedApp?, in screenID: Int? = nil) {
+        guard app?.isEnabled != false else { return }
         let id = screenID ?? focusedScreenID
         guard screens.indices.contains(id) else { return }
         focusScreen(id)
         screens[id].select(app)
         selectedApp = app
-        _ = screens[id].controller(for: app)
+        _ = screens[id].selectedController
     }
 
-    private func replaceSelection(of app: SimulatedApp, with replacement: SimulatedApp) {
-        for screen in screens where screen.selectedApp.id == app.id {
+    private func replaceSelection(of app: SimulatedApp, with replacement: SimulatedApp?) {
+        for screen in screens where screen.selectedApp?.id == app.id {
             screen.select(replacement)
         }
         selectedApp = screens[focusedScreenID].selectedApp
@@ -489,8 +503,8 @@ final class PocketModel: ObservableObject {
         websites[index].isEnabled = enabled
         persistWebsites()
 
-        if !enabled, let fallback = enabledApps.first {
-            replaceSelection(of: app, with: fallback)
+        if !enabled {
+            replaceSelection(of: app, with: nil)
         }
     }
 
@@ -540,9 +554,7 @@ final class PocketModel: ObservableObject {
         screens.forEach { $0.invalidate(app) }
         persistWebsites()
 
-        if let fallback = enabledApps.first {
-            replaceSelection(of: app, with: fallback)
-        }
+        replaceSelection(of: app, with: nil)
     }
 
     private static func loadWebsites(from defaults: UserDefaults) -> [SimulatedApp] {

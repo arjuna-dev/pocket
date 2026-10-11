@@ -38,6 +38,48 @@ struct MultiScreenTests {
         return view.subviews.flatMap { webViews(in: $0) }
     }
 
+    @MainActor static func checkLayoutIcons() throws {
+        for layout in ScreenLayout.allCases {
+            let dimension = max(2, layout.columns, layout.rows)
+            let gap: CGFloat = dimension == 2 ? 2 : 1
+            let cell = (16 - gap * CGFloat(dimension - 1)) / CGFloat(dimension)
+            let bitmap = NSBitmapImageRep(data: layout.iconImage.tiffRepresentation!)!
+            let scale = CGFloat(bitmap.pixelsWide) / 16
+            for row in 0..<dimension {
+                for column in 0..<dimension {
+                    let x = Int((CGFloat(column) * (cell + gap) + cell / 2) * scale)
+                    let y = Int((CGFloat(row) * (cell + gap) + cell / 2) * scale)
+                    let alpha = bitmap.colorAt(x: x, y: y)!.alphaComponent
+                    let expected: CGFloat = row < layout.rows && column < layout.columns ? 1 : 0.22
+                    try require(abs(alpha - expected) < 0.02,
+                        "Incorrect highlighted cell in \(layout.rawValue) at column \(column), row \(row)")
+                }
+            }
+        }
+        print("PASS: all layout icons show white active squares and dim unused squares in a 2x2, 3x3, or 4x4 grid")
+    }
+
+    @MainActor static func checkSelectionMigration() throws {
+        let suite = "Pocket.SelectionMigrationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("whatsapp", forKey: "Pocket.selectedApp")
+        defaults.set("whatsapp", forKey: "Pocket.screen.0.app")
+        defaults.set("youtube", forKey: "Pocket.screen.1.app")
+        defaults.set("telegram", forKey: "Pocket.screen.2.app")
+        defaults.set("https://web.telegram.org/a/", forKey: "Pocket.screen.2.url.telegram")
+        let migrated = PocketModel(defaults: defaults, loadPages: false)
+        try require(migrated.screens[0].selectedApp?.id == "whatsapp" && migrated.screens[2].selectedApp?.id == "telegram",
+            "Migration discarded an existing primary screen or a saved page")
+        try require(migrated.screens[1].selectedApp == nil && migrated.screens[15].selectedApp == nil,
+            "Migration retained unused automatic site assignments")
+        migrated.select(.youtube, in: 1)
+        let restored = PocketModel(defaults: defaults, loadPages: false)
+        try require(restored.screens[1].selectedApp?.id == "youtube",
+            "An explicit selection without a loaded URL did not restore")
+        print("PASS: migration preserves opened pages, clears unused assignments, and restores new explicit choices")
+    }
+
     @MainActor static func checkWindowSizing(defaults: UserDefaults) throws {
         let window = NSWindow(contentRect: NSRect(x: 100, y: 200, width: 401, height: 331),
             styleMask: [.borderless], backing: .buffered, defer: false)
@@ -78,8 +120,12 @@ struct MultiScreenTests {
         let suite = "Pocket.MultiScreenTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
+        try checkLayoutIcons()
+        try checkSelectionMigration()
         try checkWindowSizing(defaults: defaults)
         let model = PocketModel(defaults: defaults, loadPages: false)
+        try require(model.screens.allSatisfy { $0.selectedApp == nil && $0.selectedController == nil },
+            "A new screen chose a site or created a web view automatically")
         model.screenLayout = .grid
         model.select(.youtube, in: 3)
         model.select(.youtube, in: 0)
@@ -96,11 +142,17 @@ struct MultiScreenTests {
         window.orderFrontRegardless()
         defer { window.close() }
 
+        try await waitFor("Blank screens mounted arbitrary web views") { webViews(in: host).count == 2 }
+        model.screenLayout = ScreenLayout(columns: 4, rows: 4)
+        try await waitFor("Adding unused screens opened arbitrary sites") { webViews(in: host).count == 2 }
+        print("PASS: fresh and newly added screens stay off and mount no web views")
+
         // Loaded pages can report very different preferred/minimum widths.
         // Exercise the mounted grid after WebKit has real content, not just
         // initially empty native views.
         for screen in model.screens {
-            let view = screen.controller(for: screen.selectedApp).webView
+            if screen.selectedApp == nil { model.select(.youtube, in: screen.id) }
+            let view = screen.selectedController!.webView
             view.loadHTMLString("<!doctype html><style>html,body{margin:0;min-width:1200px}main{width:500px}</style><main>Wide site fixture</main>", baseURL: nil)
             try await waitFor("Wide site fixture did not load") {
                 try await view.evaluateJavaScript("document.querySelector('main')?.textContent") as? String == "Wide site fixture"
@@ -115,7 +167,7 @@ struct MultiScreenTests {
             host.layoutSubtreeIfNeeded()
             let frames = layout.frames(in: host.bounds.size)
             for id in layout.screenIDs {
-                let view = model.screens[id].controller(for: model.screens[id].selectedApp).webView
+                let view = model.screens[id].selectedController!.webView
                 let rect = view.convert(view.bounds, to: host)
                 try require(abs(rect.width - frames[id].width) < 1 && abs(rect.height - frames[id].height) < 1,
                     "Page size does not fill its tile for \(layout.title)")
@@ -127,19 +179,19 @@ struct MultiScreenTests {
                     "The activity overlay blocks web interaction in \(layout.title), tile \(id): \(String(describing: hit)), target \(view), rect \(rect)")
             }
         }
-        print("PASS: loaded sites with different content widths fill equal tiles in all four layouts")
+        print("PASS: loaded sites with different content widths fill equal tiles in all sixteen layouts")
 
         for size in [CGSize(width: 901, height: 603), CGSize(width: 623, height: 537), CGSize(width: 441, height: 371)] {
             window.setContentSize(size)
             try await Task.sleep(for: .milliseconds(100))
             host.layoutSubtreeIfNeeded()
-            let views = model.screenLayout.screenIDs.map { model.screens[$0].controller(for: model.screens[$0].selectedApp).webView }
+            let views = model.screenLayout.screenIDs.map { model.screens[$0].selectedController!.webView }
             let rects = views.map { $0.convert($0.bounds, to: host) }
             for rect in rects {
                 try require(abs(rect.width - rects[0].width) < 0.51 && abs(rect.height - rects[0].height) < 0.51,
                     "Resizing to \(size) produced unequal screens: \(rects)")
             }
-            try require(abs(rects[0].maxX - rects[1].minX) < 0.51 && abs(rects[0].maxY - rects[2].minY) < 0.51,
+            try require(abs(rects[0].maxX - rects[1].minX) < 0.51 && abs(rects[0].maxY - rects[model.screenLayout.columns].minY) < 0.51,
                 "Resizing introduced an interior gap")
             for rect in rects {
                 let top = ScreenControlGeometry.navigation(above: rect)
@@ -193,6 +245,23 @@ struct MultiScreenTests {
             defaults.string(forKey: "Pocket.screen.3.url.youtube") == "https://www.youtube.com/watch?v=pocket-fixture"
         }
         let savedScroll = try await bottom.webView.evaluateJavaScript("scrollY") as! Double
+        model.screenLayout = .grid
+        model.select(nil, in: 3)
+        try await waitFor("Off screen still mounted its web view") { webViews(in: host).count == 3 }
+        try require(model.selectedApp == nil && model.selectedController == nil,
+            "Off screen retained active navigation controls")
+        let restoredOff = PocketModel(defaults: defaults, loadPages: false)
+        try require(restoredOff.screens[3].selectedApp == nil,
+            "Off selection did not persist across launches")
+        try require(defaults.string(forKey: "Pocket.screen.3.url.youtube") == "https://www.youtube.com/watch?v=pocket-fixture",
+            "Switching off discarded the site's saved URL")
+        model.select(.youtube, in: 3)
+        try await waitFor("Choosing a site after Off did not restore its view") { webViews(in: host).count == 4 }
+        try require(model.selectedController === bottom,
+            "Choosing a site after Off rebuilt its controller")
+        let afterOff = try await bottom.webView.evaluateJavaScript("window.screenMarker===42 && document.getElementById('draft').value==='remember me'") as? Bool
+        try require(afterOff == true, "Switching off and back lost the live page or form")
+        print("PASS: Off unmounts the page, persists across launches, and retains URL, controller, and live document")
         model.focusScreen(3)
         model.screenLayout = .single
         try await waitFor("Hidden screens remain attached") { webViews(in: host).count == 1 }
@@ -208,7 +277,7 @@ struct MultiScreenTests {
         try require(abs(restoredScroll - savedScroll) <= 1, "Returning grid lost the scroll position")
         try require(retained == true, "Returning to grid lost live document or scroll state")
         let restored = PocketModel(defaults: defaults, loadPages: false)
-        try require(restored.screenLayout == .grid && restored.screens[3].selectedApp.id == "youtube",
+        try require(restored.screenLayout == .grid && restored.screens[3].selectedApp?.id == "youtube",
             "Saved layout and per-screen selections did not restore")
         print("PASS: grid to single to grid retains URL, live document, form, scroll, and controller identity")
 
@@ -262,9 +331,9 @@ struct MultiScreenTests {
         try await checkPopupAndRecovery()
 
         model.setEnabled(false, for: .youtube)
-        try require(model.screens.allSatisfy { $0.selectedApp.id != "youtube" },
+        try require(model.screens.allSatisfy { $0.selectedApp == nil },
             "Disabling a site did not replace it on every screen")
-        print("PASS: disabling a site updates every screen, including retained screens")
+        print("PASS: disabling a site switches its screens off without opening replacement websites")
     }
 
     @MainActor static func checkPopupAndRecovery() async throws {
