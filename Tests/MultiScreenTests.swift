@@ -53,6 +53,13 @@ struct MultiScreenTests {
         return view.subviews.flatMap { trackers(in: $0) }
     }
 
+    final class HoverTestWindow: NSWindow {
+        // Titlebar/style changes must not move this fixture back onto a monitor.
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            frameRect
+        }
+    }
+
     @MainActor static func checkRootControlHover() async throws {
         let suite = "Pocket.RootHoverTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -61,7 +68,10 @@ struct MultiScreenTests {
         let model = PocketModel(defaults: defaults, loadPages: false, chat: chat)
         let activity = ScreenChromeActivity()
         let manager = WindowManager(defaults: defaults)
-        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 1001, height: 801),
+        // Keep real desktop pointer events out of this synthetic hover sequence.
+        // Native tracking areas still run when the window is ordered offscreen.
+        let windowX = (NSScreen.screens.map { $0.frame.maxX }.max() ?? 0) + 10_000
+        let window = HoverTestWindow(contentRect: CGRect(x: windowX, y: 100, width: 1001, height: 801),
             styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: AppRootView(model: model, activity: activity, windowManager: manager))
@@ -106,6 +116,8 @@ struct MultiScreenTests {
                     }
                     try await Task.sleep(for: .milliseconds(10))
                     host.layoutSubtreeIfNeeded()
+                    try require(activity.screenID == id && model.focusedScreenID == id,
+                        "Native layout changed tile \(id)'s chrome to \(String(describing: activity.screenID)), focus \(model.focusedScreenID), in \(layout.title), chat \(composerVisible)")
                     for x in [navigation.minX + 69, navigation.maxX - 15] {
                         let buttonPoint = tracker.convert(CGPoint(x: x, y: navigation.midY), to: host.superview)
                         let hit = host.hitTest(buttonPoint)
@@ -118,7 +130,8 @@ struct MultiScreenTests {
                         modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
                         eventNumber: 0, clickCount: 0, pressure: 0)!
                     tracker.handlePointerMovement(resume)
-                    try require(activity.screenID == id, "Moving on an idle capsule revealed the neighboring screen")
+                    try require(activity.screenID == id,
+                        "Moving on an idle capsule revealed tile \(String(describing: activity.screenID)) instead of \(id) in \(layout.title), chat \(composerVisible)")
                     // AppKit can report exits when tracking areas change under the pointer.
                     // An exit over an interior control is not a whole-window exit.
                     let internalExit = NSEvent.enterExitEvent(with: .mouseExited,
