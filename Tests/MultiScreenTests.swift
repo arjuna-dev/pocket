@@ -38,6 +38,105 @@ struct MultiScreenTests {
         return view.subviews.flatMap { webViews(in: $0) }
     }
 
+    actor HoverClient: PocketAIClient {
+        func account() async throws -> PocketAIAccount { .init(isSignedIn: false, email: nil) }
+        func startLogin() async throws -> PocketAILogin { throw PocketAIError.unavailable }
+        func finishLogin(_ id: String) async throws { throw PocketAIError.unavailable }
+        func cancelLogin(_ id: String) async {}
+        func generate(prompt: String, workspace: PocketWorkspace) async throws -> PocketWorkspaceChange { throw PocketAIError.unavailable }
+        func interrupt() async {}
+        func shutdown() async {}
+    }
+
+    @MainActor static func trackers(in view: NSView) -> [ScreenActivityNSView] {
+        if let tracker = view as? ScreenActivityNSView { return [tracker] }
+        return view.subviews.flatMap { trackers(in: $0) }
+    }
+
+    @MainActor static func checkRootControlHover() async throws {
+        let suite = "Pocket.RootHoverTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let chat = PocketChatController(client: HoverClient())
+        let model = PocketModel(defaults: defaults, loadPages: false, chat: chat)
+        let activity = ScreenChromeActivity()
+        let manager = WindowManager(defaults: defaults)
+        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 1001, height: 801),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: AppRootView(model: model, activity: activity, windowManager: manager))
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.close() }
+        for screen in model.screens {
+            model.select(.youtube, in: screen.id)
+            screen.selectedController!.webView.loadHTMLString("<main>Hover fixture</main>", baseURL: nil)
+        }
+        for composerVisible in [false, true] {
+            chat.isComposerVisible = composerVisible
+            for layout in ScreenLayout.allCases {
+                model.screenLayout = layout
+                try await waitFor("Root view did not mount its pages and tracker") {
+                    webViews(in: host).count == layout.screenIDs.count && trackers(in: host).count == 1
+                }
+                window.setContentSize(CGSize(width: 1001, height: 801))
+                try await Task.sleep(for: .milliseconds(80))
+                host.layoutSubtreeIfNeeded()
+                let tracker = trackers(in: host)[0]
+                for id in layout.screenIDs {
+                    let web = model.screens[id].selectedController!.webView
+                    // Use the mounted page's actual rect, not a second calculation of the grid.
+                    let page = web.convert(web.bounds, to: tracker)
+                    let website = ScreenControlGeometry.website(above: page)
+                    let navigation = ScreenControlGeometry.navigation(above: page)
+                    let path = [CGPoint(x: website.midX, y: page.minY + 2),
+                                CGPoint(x: website.midX, y: page.minY - 2),
+                                CGPoint(x: website.midX, y: website.midY),
+                                CGPoint(x: website.maxX + 3, y: website.midY),
+                                CGPoint(x: navigation.midX, y: navigation.midY),
+                                CGPoint(x: navigation.maxX + 2, y: navigation.midY),
+                                CGPoint(x: navigation.midX, y: navigation.minY - 2)]
+                    for point in path {
+                        let event = NSEvent.mouseEvent(with: .mouseMoved,
+                            location: tracker.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+                        tracker.handlePointerMovement(event)
+                        try require(activity.screenID == id && model.focusedScreenID == id,
+                            "Root hover switched away from tile \(id) in \(layout.title), chat \(composerVisible), at \(point)")
+                    }
+                    try await Task.sleep(for: .milliseconds(10))
+                    host.layoutSubtreeIfNeeded()
+                    let reloadPoint = tracker.convert(CGPoint(x: navigation.maxX - 15, y: navigation.midY), to: host.superview)
+                    let hit = host.hitTest(reloadPoint)
+                    try require(hit != nil && !webViews(in: host).contains(where: { hit === $0 || hit?.isDescendant(of: $0) == true }),
+                        "The visible navigation capsule passes clicks through to a website in tile \(id)")
+                    activity.leave()
+                    let resume = NSEvent.mouseEvent(with: .mouseMoved,
+                        location: tracker.convert(CGPoint(x: navigation.midX, y: navigation.midY), to: nil),
+                        modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 0, clickCount: 0, pressure: 0)!
+                    tracker.handlePointerMovement(resume)
+                    try require(activity.screenID == id, "Moving on an idle capsule revealed the neighboring screen")
+                    // AppKit can report exits when tracking areas change under the pointer.
+                    // An exit over an interior control is not a whole-window exit.
+                    let internalExit = NSEvent.enterExitEvent(with: .mouseExited,
+                        location: tracker.convert(CGPoint(x: navigation.midX, y: navigation.midY), to: nil),
+                        modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                        eventNumber: 0, trackingNumber: 0, userData: nil)!
+                    tracker.mouseExited(with: internalExit)
+                    try require(activity.screenID == id,
+                        "An internal tracking exit hid tile \(id)'s controls before they could be clicked")
+                }
+                let outside = NSEvent.enterExitEvent(with: .mouseExited,
+                    location: tracker.convert(CGPoint(x: -2, y: 100), to: nil), modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil)!
+                tracker.mouseExited(with: outside)
+                try require(activity.screenID == nil, "Actual window exit did not hide controls immediately")
+            }
+        }
+        print("PASS: full app hover crosses page/control gaps in all layouts with chat open and closed; only true window exits hide controls")
+    }
+
     @MainActor static func checkLayoutIcons() throws {
         for layout in ScreenLayout.allCases {
             let dimension = max(2, layout.columns, layout.rows)
@@ -328,6 +427,7 @@ struct MultiScreenTests {
         tracker.removeFromSuperview()
         print("PASS: only mouse movement reveals controls or extends the inactivity deadline")
 
+        try await checkRootControlHover()
         try await checkPopupAndRecovery()
 
         model.setEnabled(false, for: .youtube)

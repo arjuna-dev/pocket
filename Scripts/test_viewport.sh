@@ -6,5 +6,6 @@ trap 'rm -rf "$test_temp_dir"' EXIT
 cd "$project_dir"
 xcrun swiftc -parse-as-library -swift-version 5 \
     Sources/Pocket/ScreenLayout.swift Sources/Pocket/Models.swift Sources/Pocket/WebViewController.swift \
+    Sources/Pocket/PocketWorkspace.swift Sources/Pocket/CodexAppServerClient.swift Sources/Pocket/PocketChatController.swift \
     Tests/ResponsiveViewportTests.swift -o "$test_temp_dir/viewport-tests"
 "$test_temp_dir/viewport-tests"

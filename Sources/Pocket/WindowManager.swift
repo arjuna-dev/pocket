@@ -10,6 +10,7 @@ final class WindowManager {
     private var currentMode: PresentationMode?
     private var currentOrientation: DeviceOrientation?
     private var currentLayout: ScreenLayout = .single
+    private var chatComposerHeight: CGFloat = 0
     private let defaults: UserDefaults
     private var resizeObserver: NSObjectProtocol?
     private var closeObserver: NSObjectProtocol?
@@ -54,10 +55,11 @@ final class WindowManager {
         currentLayout = mode == .screen ? layout : .single
         configureChrome(for: mode, orientation: orientation, window: window)
 
-        let contentSize = size ?? (mode == .screen
+        let bodySize = size ?? (mode == .screen
             ? layout.contentSize(forPageSize: CGSize(width: orientation.screenSize.width * scale,
                                                      height: orientation.screenSize.height * scale))
             : mode.contentSize(for: orientation, scale: scale))
+        let contentSize = includingComposer(bodySize)
         if !force, let lastContentSize,
            abs(lastContentSize.width - contentSize.width) < 1,
            abs(lastContentSize.height - contentSize.height) < 1 {
@@ -101,10 +103,10 @@ final class WindowManager {
         // Read the actual window, not a stale cached size from before a drag.
         let oldFrame = window.frame
         let size = window.contentRect(forFrameRect: oldFrame).size
-        let pageSize = currentLayout.pageSize(in: size)
+        let pageSize = currentLayout.pageSize(in: CGSize(width: size.width, height: size.height - chatComposerHeight))
         currentLayout = layout
-        window.contentMinSize = layout.contentSize(forPageSize: ScreenLayout.minimumPageSize)
-        window.setContentSize(layout.contentSize(forPageSize: pageSize))
+        window.contentMinSize = includingComposer(layout.contentSize(forPageSize: ScreenLayout.minimumPageSize))
+        window.setContentSize(includingComposer(layout.contentSize(forPageSize: pageSize)))
         var frame = window.frame
         frame.origin = CGPoint(x: oldFrame.minX, y: oldFrame.maxY - frame.height)
         window.setFrame(frame, display: true)
@@ -113,8 +115,29 @@ final class WindowManager {
     }
 
     private func minimumContentSize(for mode: PresentationMode, orientation: DeviceOrientation, layout: ScreenLayout) -> CGSize {
-        mode == .screen ? layout.contentSize(forPageSize: ScreenLayout.minimumPageSize)
-            : mode.contentSize(for: orientation, scale: mode.minimumScale)
+        includingComposer(mode == .screen ? layout.contentSize(forPageSize: ScreenLayout.minimumPageSize)
+            : mode.contentSize(for: orientation, scale: mode.minimumScale))
+    }
+
+    private func includingComposer(_ size: CGSize) -> CGSize {
+        CGSize(width: size.width, height: size.height + chatComposerHeight)
+    }
+
+    func setChatComposerVisible(_ visible: Bool) {
+        let height = visible ? PocketChatController.composerHeight : 0
+        guard height != chatComposerHeight else { return }
+        let previousHeight = chatComposerHeight
+        chatComposerHeight = height
+        guard let window, let currentMode, let currentOrientation else { return }
+        let oldFrame = window.frame
+        let size = window.contentRect(forFrameRect: oldFrame).size
+        configureChrome(for: currentMode, orientation: currentOrientation, window: window)
+        window.contentMinSize = minimumContentSize(for: currentMode, orientation: currentOrientation, layout: currentLayout)
+        window.setContentSize(CGSize(width: size.width, height: size.height - previousHeight + height))
+        var frame = window.frame
+        frame.origin = CGPoint(x: oldFrame.minX, y: oldFrame.maxY - frame.height)
+        window.setFrame(frame, display: true)
+        lastContentSize = window.contentRect(forFrameRect: window.frame).size
     }
 
     func setAlwaysOnTop(_ enabled: Bool) {
@@ -211,10 +234,11 @@ final class WindowManager {
     private func rememberCurrentWindowSize() {
         guard let window, let currentMode, let currentOrientation else { return }
 
-        let contentSize = window.contentRect(forFrameRect: window.frame).size
+        let outerSize = window.contentRect(forFrameRect: window.frame).size
+        let contentSize = CGSize(width: outerSize.width, height: outerSize.height - chatComposerHeight)
         guard contentSize.width > 0, contentSize.height > 0 else { return }
 
-        lastContentSize = contentSize
+        lastContentSize = outerSize
         if currentMode == .screen {
             let page = currentLayout.pageSize(in: contentSize)
             defaults.set(page.width, forKey: "Pocket.pageSize.\(currentOrientation.rawValue).width")
@@ -279,7 +303,7 @@ final class WindowManager {
             // resizing without AppKit applying a stale single-screen ratio.
             window.resizeIncrements = CGSize(width: 1, height: 1)
         } else {
-            window.contentAspectRatio = mode.contentSize(for: orientation)
+            window.contentAspectRatio = includingComposer(mode.contentSize(for: orientation))
         }
         setStandardWindowButtonsHidden(true, on: window)
     }
