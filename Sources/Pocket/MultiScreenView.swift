@@ -16,7 +16,7 @@ struct MultiScreenView: View {
             let frames = model.screenLayout.frames(in: proxy.size)
             ZStack(alignment: .topLeading) {
                 ForEach(model.screenLayout.screenIDs, id: \.self) { id in
-                    ScreenPageView(screen: model.screens[id])
+                    ScreenPageView(screen: model.screens[id], isExpanded: model.expandedScreenID == id)
                         .frame(width: frames[id].width, height: frames[id].height)
                         .position(x: frames[id].midX, y: frames[id].midY)
                 }
@@ -76,8 +76,17 @@ private extension Color {
 
 private struct ScreenPageView: View {
     @ObservedObject var screen: PocketScreen
+    let isExpanded: Bool
     var body: some View {
-        ScreenContent(controller: screen.selectedController, cornerRadius: 0).clipped()
+        Group {
+            if isExpanded {
+                EmptyScreenView()
+                    .accessibilityLabel("Screen \(screen.id + 1) is expanded in a floating window")
+            } else {
+                ScreenContent(controller: screen.selectedController, cornerRadius: 0)
+            }
+        }
+            .clipped()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -126,7 +135,12 @@ private struct ScreenSpecificControls: View {
     var body: some View {
         let navigation = ScreenControlGeometry.navigation(above: page)
         let website = ScreenControlGeometry.website(above: page)
-        CompactNavigationControls(controller: screen.selectedController)
+        CompactNavigationControls(controller: screen.selectedController,
+            isExpanded: model.expandedScreenID == screen.id,
+            toggleExpansion: {
+                if model.expandedScreenID == screen.id { model.collapseScreen() }
+                else { model.expandScreen(screen.id) }
+            })
             .frame(width: navigation.width, height: navigation.height)
             .position(x: navigation.midX, y: navigation.midY)
         CompactWebsiteChooser(model: model, screen: screen, height: website.height)

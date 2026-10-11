@@ -53,6 +53,13 @@ struct MultiScreenTests {
         return view.subviews.flatMap { trackers(in: $0) }
     }
 
+    final class HoverTestWindow: NSWindow {
+        // Titlebar/style changes must not move this fixture back onto a monitor.
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            frameRect
+        }
+    }
+
     @MainActor static func checkRootControlHover() async throws {
         let suite = "Pocket.RootHoverTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -61,7 +68,10 @@ struct MultiScreenTests {
         let model = PocketModel(defaults: defaults, loadPages: false, chat: chat)
         let activity = ScreenChromeActivity()
         let manager = WindowManager(defaults: defaults)
-        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 1001, height: 801),
+        // Keep real desktop pointer events out of this synthetic hover sequence.
+        // Native tracking areas still run when the window is ordered offscreen.
+        let windowX = (NSScreen.screens.map { $0.frame.maxX }.max() ?? 0) + 10_000
+        let window = HoverTestWindow(contentRect: CGRect(x: windowX, y: 100, width: 1001, height: 801),
             styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: AppRootView(model: model, activity: activity, windowManager: manager))
@@ -106,17 +116,22 @@ struct MultiScreenTests {
                     }
                     try await Task.sleep(for: .milliseconds(10))
                     host.layoutSubtreeIfNeeded()
-                    let reloadPoint = tracker.convert(CGPoint(x: navigation.maxX - 15, y: navigation.midY), to: host.superview)
-                    let hit = host.hitTest(reloadPoint)
-                    try require(hit != nil && !webViews(in: host).contains(where: { hit === $0 || hit?.isDescendant(of: $0) == true }),
-                        "The visible navigation capsule passes clicks through to a website in tile \(id)")
+                    try require(activity.screenID == id && model.focusedScreenID == id,
+                        "Native layout changed tile \(id)'s chrome to \(String(describing: activity.screenID)), focus \(model.focusedScreenID), in \(layout.title), chat \(composerVisible)")
+                    for x in [navigation.minX + 69, navigation.maxX - 15] {
+                        let buttonPoint = tracker.convert(CGPoint(x: x, y: navigation.midY), to: host.superview)
+                        let hit = host.hitTest(buttonPoint)
+                        try require(hit != nil && !webViews(in: host).contains(where: { hit === $0 || hit?.isDescendant(of: $0) == true }),
+                            "Refresh or Expand passes clicks through to a website in tile \(id)")
+                    }
                     activity.leave()
                     let resume = NSEvent.mouseEvent(with: .mouseMoved,
                         location: tracker.convert(CGPoint(x: navigation.midX, y: navigation.midY), to: nil),
                         modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
                         eventNumber: 0, clickCount: 0, pressure: 0)!
                     tracker.handlePointerMovement(resume)
-                    try require(activity.screenID == id, "Moving on an idle capsule revealed the neighboring screen")
+                    try require(activity.screenID == id,
+                        "Moving on an idle capsule revealed tile \(String(describing: activity.screenID)) instead of \(id) in \(layout.title), chat \(composerVisible)")
                     // AppKit can report exits when tracking areas change under the pointer.
                     // An exit over an interior control is not a whole-window exit.
                     let internalExit = NSEvent.enterExitEvent(with: .mouseExited,
@@ -135,6 +150,103 @@ struct MultiScreenTests {
             }
         }
         print("PASS: full app hover crosses page/control gaps in all layouts with chat open and closed; only true window exits hide controls")
+    }
+
+    @MainActor static func checkScreenExpansion() async throws {
+        let suite = "Pocket.ExpansionTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = PocketModel(defaults: defaults, loadPages: false,
+                                chat: PocketChatController(client: HoverClient()))
+        model.screenLayout = ScreenLayout(columns: 4, rows: 4)
+        model.select(.youtube, in: 0)
+        model.select(.youtube, in: 15)
+        let controller = model.screens[15].selectedController!
+        let page = controller.webView
+        page.loadHTMLString("<body style='height:5000px'><input id='draft' value='original'><script>window.marker=42</script>",
+                            baseURL: URL(string: "https://www.youtube.com/"))
+        let window = NSWindow(contentRect: CGRect(x: 100, y: 100, width: 1001, height: 801),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let expansion = ScreenExpansionController(model: model)
+        let host = NSHostingView(rootView: AppRootView(model: model, windowManager: WindowManager(defaults: defaults),
+                                                       expansion: expansion))
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.close() }
+        try await waitFor("Expansion fixture did not mount") {
+            let marker = try? await page.evaluateJavaScript("window.marker")
+            return page.window === window && marker as? Int == 42
+        }
+        _ = try await page.evaluateJavaScript("document.getElementById('draft').value='keep my draft'; history.pushState({}, '', '/watch?v=expanded-fixture'); scrollTo(0,300)")
+        try await Task.sleep(for: .milliseconds(100))
+        let oldHost = page.superview as! WebViewHost
+        let originalWindowFrame = window.frame
+        let originalRects = webViews(in: host).map { $0.convert($0.bounds, to: host) }
+        let historyCount = page.backForwardList.backList.count
+        for _ in 0..<3 {
+            model.expandScreen(15)
+            try await waitFor("Expand did not move the live page into a floating window") {
+                expansion.window?.isVisible == true && page.window === expansion.window && webViews(in: host).count == 1
+            }
+            let panel = expansion.window!
+            try require(window.childWindows?.count == 1 && model.screenLayout == ScreenLayout(columns: 4, rows: 4),
+                        "Expansion changed the grid or created multiple floating windows")
+            try require(window.frame == originalWindowFrame, "Expansion resized the main grid")
+            let expectedFrame = ScreenExpansionController.expandedFrame(in: window.screen!.visibleFrame)
+            try require(abs(panel.frame.width - expectedFrame.width) <= 1 && abs(panel.frame.height - expectedFrame.height) <= 1 &&
+                        abs(panel.frame.midX - expectedFrame.midX) <= 1 && abs(panel.frame.midY - expectedFrame.midY) <= 1,
+                        "Expanded window is not centered at 75 percent of the current display")
+            try require(controller === model.screens[15].selectedController && webViews(in: panel.contentView!).first === page,
+                        "Expansion created a replacement web view")
+            let expandedSize = page.frame.size
+            oldHost.layout()
+            try require(page.frame.size == expandedSize, "The detached grid host resized the expanded page")
+            _ = try await page.evaluateJavaScript("scrollTo(0,300)")
+            try require((try await page.evaluateJavaScript("window.marker===42 && document.getElementById('draft').value==='keep my draft'")) as? Bool == true,
+                        "Expanding lost the live document or input")
+            let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: panel.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+                isARepeat: false, keyCode: 53)!
+            try require(expansion.handleEscape(escape), "Escape in the floating window was not handled")
+            try await waitFor("Collapse did not restore the same page to its original grid tile") {
+                expansion.window == nil && page.window === window && webViews(in: host).count == 2
+            }
+            host.layoutSubtreeIfNeeded()
+            try require(webViews(in: host).map { $0.convert($0.bounds, to: host) } == originalRects,
+                        "Collapsing changed the grid tile sizes")
+            try require(page.url?.absoluteString == "https://www.youtube.com/watch?v=expanded-fixture" &&
+                        page.backForwardList.backList.count == historyCount,
+                        "Expand/collapse lost URL or navigation history")
+            try require((try await page.evaluateJavaScript("window.marker===42 && document.getElementById('draft').value==='keep my draft' && Math.abs(scrollY-300)<2")) as? Bool == true,
+                        "Collapse reloaded the page, lost a draft, or reset the scroll position")
+        }
+        model.expandScreen(15)
+        try await waitFor("Second expansion did not open") { expansion.window != nil }
+        let oldPanel = expansion.window!
+        model.expandScreen(0)
+        try await waitFor("Switching expanded screens did not restore the previous page") {
+            expansion.window !== oldPanel && expansion.window != nil && page.window === window
+        }
+        try require(!oldPanel.isVisible && window.childWindows?.count == 1, "Switching left an extra floating window")
+        expansion.window!.close()
+        try await waitFor("Closing the floating window did not collapse it") { model.expandedScreenID == nil && expansion.window == nil }
+        model.expandScreen(15)
+        try await waitFor("Layout-collapse fixture did not open") { expansion.window != nil }
+        model.screenLayout = .single
+        try await waitFor("Hiding an expanded screen in a new layout left an orphan window") { expansion.window == nil }
+        model.expandScreen(0)
+        try await waitFor("Presentation-collapse fixture did not open") { expansion.window != nil }
+        model.presentationMode = .device
+        try await waitFor("Switching presentation did not collapse expansion") { expansion.window == nil }
+        model.presentationMode = .screen
+        model.select(nil, in: 0)
+        model.expandScreen(0)
+        try await waitFor("An off screen could not be expanded") { expansion.window != nil }
+        try require(webViews(in: expansion.window!.contentView!).isEmpty, "Expanding an off screen opened an arbitrary page")
+        window.close()
+        try require(expansion.window == nil && model.expandedScreenID == nil, "Closing Pocket left the expanded window open")
+        print("PASS: 75-percent floating expansion preserves live page, URL, history, draft, scroll and grid; Escape, switching, native close, Off and parent close work")
     }
 
     @MainActor static func checkLayoutIcons() throws {
@@ -428,6 +540,7 @@ struct MultiScreenTests {
         print("PASS: only mouse movement reveals controls or extends the inactivity deadline")
 
         try await checkRootControlHover()
+        try await checkScreenExpansion()
         try await checkPopupAndRecovery()
 
         model.setEnabled(false, for: .youtube)

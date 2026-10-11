@@ -21,6 +21,8 @@ Screen mode has a native layout menu with four equally sized square cells in eac
 
 Websites reflow as the viewport changes. Below a 480 x 300 viewport, Pocket zooms out to keep the layout usable; normal sizing returns when the window grows.
 
+Click the four-corners icon to the right of Refresh to expand an individual screen into a floating window centered on the current monitor at 75% of its available width and height. The grid stays in place underneath. The floating view keeps that screen's website selector and navigation controls, with the same hover timeout. Click the icon again or press Escape to return the live page to its original tile. One screen can be expanded at a time; switching expanded screens restores the previous one. Expansion preserves the page's URL, navigation history, form input, and scroll position.
+
 Web views fill their assigned tiles independently of website content widths. New-window links and sign-in popups open in a separate window, preserving communication with the original page. If a WebKit content process stops, Pocket attempts one reload and shows a retry message if it stops again within 30 seconds.
 
 Each screen keeps its own selected site, web views, and navigation history. Switching from four screens to one and back retains the hidden screens' live pages, including their URLs, form state, and scroll positions. Screen selections, layout, and the last URL of each site on each screen are saved for the next launch; live document state is retained only while Pocket is running.

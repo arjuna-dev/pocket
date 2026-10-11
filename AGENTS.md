@@ -36,3 +36,13 @@ Keep the full `AppRootView` regression test, not just the pure geometry checks.
 It follows pointer events from mounted pages through the gaps into the controls,
 checks native hit testing, and covers all sixteen layouts with chat open and
 closed. The standalone grid test cannot detect a root tracking coordinate offset.
+
+## Preserve live screens during expansion
+
+The rightmost navigation button expands one screen into a floating window.
+Move the existing web view between its grid host and expanded host. Do not
+reload it, duplicate its controller, or resize the grid. Only its current host
+may resize the web view; a detached host can still receive a final layout pass.
+Returning through the button, Escape, window close, or a layout/mode change must
+restore the retained page without losing its URL, history, draft, or scroll.
+Keep the native expansion lifecycle tests in `Scripts/test_multi_screen.sh`.
